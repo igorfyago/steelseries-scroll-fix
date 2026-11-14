@@ -57,7 +57,7 @@ $mutants = @(
     @{ name = 'W2 the first tick is not held';        find = 'if (cfg_.firstMs > 0) {';             put = 'if (false) {' },
     @{ name = 'W2 a lone first tick is never sent';   find = 'if (held_ == Held::First && t >= heldAt_ + cfg_.firstMs) {'; put = 'if (false) {' },
     @{ name = 'W2 first tick window is exclusive';    find = 'if (held_ == Held::First && t >= heldAt_ + cfg_.firstMs) {'; put = 'if (held_ == Held::First && t > heldAt_ + cfg_.firstMs) {' },
-    @{ name = 'W2 the stroke counts from the late delivery'; find = 'accept(sign(heldDelta_), heldAt_, heldSys_);'; put = 'accept(sign(heldDelta_), heldAt_ + cfg_.firstMs, heldSys_);' },
+    @{ name = 'W2 the stroke counts from the late delivery'; find = "        emit->delta = heldDelta_;$nl        accept(sign(heldDelta_), heldAt_, heldSys_);"; put = "        emit->delta = heldDelta_;$nl        accept(sign(heldDelta_), heldAt_ + cfg_.firstMs, heldSys_);" },
     @{ name = 'W2 an agreeing second tick does not release the first'; find = "                held_ = Held::None;$nl                o.settled = Settled::WheelStarted;$nl                send(&o, heldDelta_);$nl                accept(dir, t, sys);"; put = "                held_ = Held::None;$nl                o.settled = Settled::WheelStarted;$nl                accept(dir, t, sys);" },
     @{ name = 'W2 the second of a disagreeing pair is let through'; find = "            o.block = true;$nl            o.verdict = Verdict::WheelFirst;$nl            return o;$nl        }$nl        if (held_ == Held::Pair) {"; put = "            o.block = false;$nl            o.verdict = Verdict::WheelFirst;$nl            return o;$nl        }$nl        if (held_ == Held::Pair) {" },
     @{ name = 'W2 the third tick blames the wrong one of the pair'; find = 'const int right = dir == sign(heldDelta_) ? heldDelta_ : heldDelta2_;'; put = 'const int right = dir == sign(heldDelta_) ? heldDelta2_ : heldDelta_;' },
@@ -80,6 +80,15 @@ $mutants = @(
 
     # housekeeping
     @{ name = 'busy() forgets hidden presses';        find = 'if (btn_[b].pendingUp || btn_[b].swallow) return true;'; put = 'if (btn_[b].pendingUp) return true;' },
+
+    # taking a hold back
+    @{ name = 'takeRelease leaves the release held';  find = "        btn_[b].pendingUp = false;$nl        btn_[b].appDown = false;$nl        return true;"; put = "        btn_[b].appDown = false;$nl        return true;" },
+    @{ name = 'takeRelease leaves the button down';   find = "        btn_[b].pendingUp = false;$nl        btn_[b].appDown = false;$nl        return true;"; put = "        btn_[b].pendingUp = false;$nl        return true;" },
+    @{ name = 'cancelRelease also marks the button up'; find = "        if (b < 0 || b >= kButtons) return;$nl        btn_[b].pendingUp = false;"; put = "        if (b < 0 || b >= kButtons) return;$nl        btn_[b].pendingUp = false;$nl        btn_[b].appDown = false;" },
+    @{ name = 'takeBackRelease leaves the button down'; find = "        btn_[b].pendingUp = false;$nl        btn_[b].appDown = false;$nl    }"; put = "        btn_[b].pendingUp = false;$nl    }" },
+    @{ name = 'takeBackTick keeps the tick held';     find = "        } else if (held_ != Held::None) {$nl            held_ = Held::None;"; put = "        } else if (held_ != Held::None) {" },
+    @{ name = 'takeBackTick takes back the whole pair'; find = "            held_ = Held::First;$nl            accept(sign(heldDelta2_), heldAt2_, heldSys2_);"; put = "            held_ = Held::None;$nl            accept(sign(heldDelta2_), heldAt2_, heldSys2_);" },
+    @{ name = 'takeBackTick does not let the stroke go on'; find = "            held_ = Held::None;$nl            accept(sign(heldDelta_), heldAt_, heldSys_);$nl        }$nl    }"; put = "            held_ = Held::None;$nl        }$nl    }" },
 
     # which mouse (whichmouse.h)
     @{ file = 'whichmouse.h'; name = 'a raw record with no device is kept';          find = '        if (!device) return;'; put = '' },

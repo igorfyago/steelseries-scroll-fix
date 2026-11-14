@@ -91,7 +91,7 @@ struct Device {
 
 class Engine {
 public:
-    static constexpr int kMaxDevices = 16;
+    static constexpr int kMaxDevices = 64;
 
     // Self test only: treat events injected by other programs as hardware of
     // the guarded mouse.
@@ -221,16 +221,43 @@ private:
         filter_.configure(c);
     }
 
-    void flushHeld() {
+    // Takes everything that is held out of the filter, runs `then`, and only
+    // after that sends what was held. Sending a release calls the hook again
+    // on this thread, and Windows may run other waiting callbacks inside that
+    // call, so the filter must be in its final state before the first send.
+    template <typename Then>
+    void flushHeldThen(Then then) {
+        Emit held[kButtons + 2];        // at most one release per button and two wheel ticks
+        int n = 0;
         Emit e;
-        while (filter_.flush(&e)) emit(e);
+        while (n < kButtons + 2 && filter_.flush(&e)) held[n++] = e;
+        then();
+        for (int i = 0; i < n; ++i) emit(held[i]);
     }
+    void flushHeld() { flushHeldThen([] {}); }
 
     // Nothing held, nothing hidden: from here every event passes until the
     // rules are applied to fresh input again.
     void letGo() {
-        flushHeld();
-        filter_.forgetHidden();
+        flushHeldThen([this] { filter_.forgetHidden(); });
+    }
+
+    // Something that is not judged is about to press a button whose release
+    // we are still holding (another mouse, another program). Send that release
+    // first, so applications never see the new press before it.
+    void releaseBefore(int button) {
+        if (!filter_.takeRelease(button)) return;
+        Rec r;
+        r.t = nowMs();
+        r.kind = kSettled;
+        r.settled = static_cast<uint8_t>(Settled::ReleaseEmitted);
+        r.button = static_cast<uint8_t>(button);
+        r.judged = 1;
+        push(r);
+        Emit e;
+        e.kind = Emit::ButtonUp;
+        e.button = button;
+        emit(e);
     }
 
     void applyPending() {
@@ -238,15 +265,16 @@ private:
         bool any = false;
         while (configs_.pop(&p)) { last = p; any = true; }
         if (!any) return;
-        flushHeld();
-        // Another mouse is guarded from now on: what the filter knows is about the old one.
-        if (last.vid != scopeVid_ || last.pid != scopePid_) filter_.forgetHidden();
-        rules_ = last.rules;
-        enabled_ = last.enabled;
-        scopeVid_ = last.vid;
-        scopePid_ = last.pid;
-        applyEffective();
-        if (!enabled_) filter_.forgetHidden();
+        flushHeldThen([this, &last] {
+            // Another mouse is guarded from now on: what the filter knows is about the old one.
+            if (last.vid != scopeVid_ || last.pid != scopePid_) filter_.forgetHidden();
+            rules_ = last.rules;
+            enabled_ = last.enabled;
+            scopeVid_ = last.vid;
+            scopePid_ = last.pid;
+            applyEffective();
+            if (!enabled_) filter_.forgetHidden();
+        });
     }
 
     void runTicks() {
@@ -319,18 +347,30 @@ private:
     }
 
     // The number of a raw input device handle, adding it to the table the
-    // first time it is seen. 0 when there is no handle (injected input) or the
-    // table is full.
+    // first time it is seen. A mouse that was unplugged and plugged in again,
+    // or that woke up with the PC, comes back with a new handle but the same
+    // path, and keeps its number: otherwise the table would fill up over the
+    // weeks and the guarded mouse would end up unknown. 0 when there is no
+    // handle (injected input), no path, or the table is full.
     uint8_t deviceNumber(HANDLE handle) {
         if (!handle) return 0;
         const int n = deviceCount_.load(std::memory_order_relaxed);
         for (int i = 0; i < n; ++i) if (devices_[i].handle == handle) return static_cast<uint8_t>(i + 1);
+        wchar_t path[260] = {};
+        UINT chars = static_cast<UINT>(sizeof(path) / sizeof(wchar_t)) - 1;
+        if (GetRawInputDeviceInfoW(handle, RIDI_DEVICENAME, path, &chars) == static_cast<UINT>(-1)) return 0;
+        path[sizeof(path) / sizeof(wchar_t) - 1] = 0;
+        if (!path[0]) return 0;
+        for (int i = 0; i < n; ++i) {
+            if (_wcsicmp(devices_[i].info.path, path) == 0) {
+                devices_[i].handle = handle;        // only this thread reads the handle
+                return static_cast<uint8_t>(i + 1);
+            }
+        }
         if (n >= kMaxDevices) return 0;
         Slot& s = devices_[n];
         s.handle = handle;
-        UINT chars = static_cast<UINT>(sizeof(s.info.path) / sizeof(wchar_t)) - 1;
-        if (GetRawInputDeviceInfoW(handle, RIDI_DEVICENAME, s.info.path, &chars) == static_cast<UINT>(-1)) s.info.path[0] = 0;
-        s.info.path[sizeof(s.info.path) / sizeof(wchar_t) - 1] = 0;
+        wcscpy_s(s.info.path, path);
         s.info.vid = hexAfter(s.info.path, L"VID_");
         s.info.pid = hexAfter(s.info.path, L"PID_");
         deviceCount_.store(n + 1, std::memory_order_release);
@@ -527,6 +567,7 @@ private:
         const bool asHardware = !injected || e->treatInjectedAsReal;
         if (!asHardware) {
             r.source = kOtherProgram;
+            if (r.kind == kButton && down) e->releaseBefore(button);
             e->push(r);
             return CallNextHookEx(nullptr, code, wp, lp);
         }
@@ -540,6 +581,21 @@ private:
             mine = e->guarded(r.device);
         }
         if (!mine || r.kind == kHWheel) {
+            if (r.kind == kButton && down) e->releaseBefore(button);
+            e->push(r);
+            return CallNextHookEx(nullptr, code, wp, lp);
+        }
+
+        // This callback began so late that Windows has long stopped waiting for
+        // it and delivered the event itself. It is not judged at all, and what
+        // is held belongs to a past that applications have moved on from. A
+        // late press means they already have the button down: a release of it
+        // that we still hold must not be sent after that.
+        if (r.lag >= kLateMs) {
+            e->stalls.fetch_add(1, std::memory_order_relaxed);
+            if (r.kind == kButton && down) e->filter_.cancelRelease(button);
+            e->letGo();
+            r.stalled = 1;
             e->push(r);
             return CallNextHookEx(nullptr, code, wp, lp);
         }
@@ -548,9 +604,10 @@ private:
         // Going off takes effect here, without waiting for the message loop.
         if (e->enabled_ && e->offNow_.load(std::memory_order_relaxed)) {
             e->enabled_ = false;
-            e->flushHeld();
-            e->applyEffective();
-            e->filter_.forgetHidden();
+            e->flushHeldThen([e] {
+                e->applyEffective();
+                e->filter_.forgetHidden();
+            });
         }
 
         // Settle whatever ran out of time before this event. A release whose
@@ -572,10 +629,14 @@ private:
         const uint32_t ownUs = own > 4000000.0 ? 4000000000u : static_cast<uint32_t>(own * 1000.0);
         if (ownUs > e->maxOwnUs.load(std::memory_order_relaxed)) e->maxOwnUs.store(ownUs, std::memory_order_relaxed);
         if (own > kSlowMs) e->slowCalls.fetch_add(1, std::memory_order_relaxed);
-        if (own > kStallMs || r.lag >= kLateMs) {
-            // Windows may already have given up on this callback and delivered
-            // the event. Do not rely on having blocked it.
+        if (own > kStallMs) {
+            // This callback itself took so long that Windows may have given up
+            // on it and delivered the event. Do not rely on having blocked it:
+            // let it through. If the filter held this very event, that hold is
+            // taken back first, or the event would arrive twice.
             e->stalls.fetch_add(1, std::memory_order_relaxed);
+            if (o.verdict == Verdict::HeldRelease) e->filter_.takeBackRelease(button);
+            if (o.verdict == Verdict::WheelHeld || o.verdict == Verdict::WheelFirst) e->filter_.takeBackTick();
             e->letGo();
             r.stalled = 1;
             r.blocked = 0;

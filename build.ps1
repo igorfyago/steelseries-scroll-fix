@@ -1,6 +1,7 @@
 <#
-Builds fly-by-wire with the MSVC toolset that is already installed. No other
-tools or libraries are needed.
+Builds fly-by-wire with Microsoft's C++ compiler. Needs Visual Studio or the
+free "Build Tools for Visual Studio" (2019 or newer) with "Desktop development
+with C++". No other tools or libraries.
 
   build.ps1                 tests, then the program and the self test
   build.ps1 -Only tests     just the rule tests (also runs them)
@@ -8,12 +9,14 @@ tools or libraries are needed.
   build.ps1 -Only selftest  just the tools: selftest.exe, inject.exe (scripted mouse), replay.exe
   build.ps1 -SrcDir <dir>   take the sources from another folder (used by the
                             mutation check, which builds deliberately broken copies)
+  build.ps1 -VsPath <dir>   use this Visual Studio installation instead of the newest one
 #>
 param(
     [ValidateSet('all', 'tests', 'app', 'selftest')]
     [string]$Only = 'all',
     [string]$SrcDir,
-    [string]$OutDir
+    [string]$OutDir,
+    [string]$VsPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,8 +25,26 @@ if (-not $SrcDir) { $SrcDir = Join-Path $root 'src' }
 if (-not $OutDir) { $OutDir = Join-Path $root 'build' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-$vcvars = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat'
-if (-not (Test-Path -LiteralPath $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
+# The compiler comes with Visual Studio. vswhere, which ships with every
+# installation since 2017, says where each one is; the newest with the C++
+# tools wins.
+function Find-Vcvars {
+    $candidates = @()
+    if ($VsPath) {
+        $candidates = @($VsPath)
+    } else {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path -LiteralPath $vswhere) {
+            $candidates = @(& $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath -sort)
+        }
+    }
+    foreach ($c in $candidates) {
+        $bat = Join-Path $c 'VC\Auxiliary\Build\vcvars64.bat'
+        if (Test-Path -LiteralPath $bat) { return $bat }
+    }
+    throw 'No Visual Studio with the C++ tools found. Install "Build Tools for Visual Studio" with "Desktop development with C++", or pass -VsPath.'
+}
+$vcvars = Find-Vcvars
 
 # /W4 /WX: every warning is an error. /MT: no runtime DLL needed next to the exe.
 $cl = 'cl /nologo /std:c++17 /O2 /W4 /WX /EHsc /MT /DUNICODE /D_UNICODE'

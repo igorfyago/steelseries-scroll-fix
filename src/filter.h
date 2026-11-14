@@ -357,6 +357,43 @@ public:
         return false;
     }
 
+    // A release of this button is being held: hand it over for sending now.
+    // For when something else is about to press that button, so the release
+    // still comes first. Returns false when nothing was held.
+    bool takeRelease(int b) {
+        if (b < 0 || b >= kButtons || !btn_[b].pendingUp) return false;
+        btn_[b].pendingUp = false;
+        btn_[b].appDown = false;
+        return true;
+    }
+
+    // A release of this button is being held, but applications have meanwhile
+    // been given a press of it behind our back. The release is stale: forget
+    // it, the button counts as down.
+    void cancelRelease(int b) {
+        if (b < 0 || b >= kButtons) return;
+        btn_[b].pendingUp = false;
+    }
+
+    // The caller is letting through the very event the filter just decided to
+    // hold. Forget that hold without sending anything: the event itself is
+    // what applications get.
+    void takeBackRelease(int b) {
+        if (b < 0 || b >= kButtons || !btn_[b].pendingUp) return;
+        btn_[b].pendingUp = false;
+        btn_[b].appDown = false;
+    }
+    void takeBackTick() {
+        if (held_ == Held::Pair) {
+            // the second of a pair is the one being let through: the first stays held
+            held_ = Held::First;
+            accept(sign(heldDelta2_), heldAt2_, heldSys2_);
+        } else if (held_ != Held::None) {
+            held_ = Held::None;
+            accept(sign(heldDelta_), heldAt_, heldSys_);
+        }
+    }
+
     // Stop hiding the press that is physically down right now, so its release
     // passes. For when the guard goes off or its view of the mouse may be
     // stale: from here on nothing is dropped on the strength of old state.

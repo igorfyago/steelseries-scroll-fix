@@ -692,6 +692,81 @@ static void directChecks() {
         check(!buggedPair(25.0, -1, -1) && buggedPair(5.0, -1, -1), "with the press lengths unknown only the gap can speak");
         check(!buggedPair(-1, 3.0, 3.0), "no gap, no pair");
     }
+    // taking a hold back, for when the caller lets the event through after all
+    {
+        Config c = allOff();
+        c.holdMs[Left] = 25;
+        {
+            Filter f;
+            f.configure(c);
+            f.button(Left, true, 0);
+            f.button(Left, false, 50);                      // release held
+            check(f.takeRelease(Left) && !f.busy(), "takeRelease hands the held release over");
+            check(!f.takeRelease(Left), "but only once");
+            const Outcome again = f.button(Left, false, 60);
+            check(!again.block, "after that the button counts as up: a further release is not held");
+        }
+        {
+            Filter f;
+            f.configure(c);
+            f.button(Left, true, 0);
+            f.button(Left, false, 50);
+            f.cancelRelease(Left);
+            Emit em;
+            check(!f.busy() && !f.flush(&em), "cancelRelease forgets the held release: nothing is sent for it");
+            const Outcome up = f.button(Left, false, 300);
+            check(up.block && up.verdict == Verdict::HeldRelease, "and the button still counts as down: its next release is held like any other");
+        }
+        {
+            Filter f;
+            f.configure(c);
+            f.button(Left, true, 0);
+            f.button(Left, false, 50);
+            f.takeBackRelease(Left);
+            Emit em;
+            check(!f.busy() && !f.flush(&em), "takeBackRelease: nothing is left to send");
+            const Outcome next = f.button(Left, false, 60);
+            check(!next.block, "and the button counts as up");
+        }
+        {
+            Filter f;
+            check(!f.takeRelease(-1) && !f.takeRelease(kButtons), "out of range buttons are ignored");
+        }
+    }
+    {
+        Config c = allOff();
+        c.wheelGuard = true; c.reverseMs = 70; c.confirmMs = 50; c.firstMs = 40; c.wheelFlip = true;
+        Emit em;
+        {
+            Filter f;
+            f.configure(c);
+            f.wheel(120, 0);                                // first tick held
+            f.takeBackTick();
+            check(!f.busy() && !f.flush(&em), "takeBackTick: a held first tick is forgotten, not sent");
+            const Outcome next = f.wheel(120, 10);
+            check(!next.block && !next.hasEmit, "and the stroke goes on from it");
+        }
+        {
+            Filter f;
+            f.configure(c);
+            f.wheel(120, 0);
+            f.wheel(-120, 10);                              // a pair that disagrees, both held
+            f.takeBackTick();                               // the caller lets the second one through
+            check(f.busy(), "of a pair only the second is taken back");
+            check(f.flush(&em) && em.delta == 120 && !f.flush(&em), "the first is still there to be sent");
+        }
+        {
+            Filter f;
+            f.configure(c);
+            f.wheel(120, 0);
+            f.wheel(120, 8);
+            f.wheel(-120, 12);                              // a tick against the stroke, held
+            f.takeBackTick();
+            check(!f.busy(), "a held reversed tick is taken back too");
+            const Outcome next = f.wheel(-120, 20);
+            check(!next.block && !next.hasEmit, "and since it was let through, the stroke now runs its way");
+        }
+    }
     // coarse clock veto, wheel
     {
         Config c = allOff();

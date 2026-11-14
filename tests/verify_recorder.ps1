@@ -75,14 +75,27 @@ try {
     # A bounced click on Start must not restart the test, and one that lands on
     # Stop right after must not end it.
     Send-Post '/api/test' @{ action = 'start'; test = 'up'; target = 5 }
+    Start-Sleep -Milliseconds 300
     Send-Post '/api/test' @{ action = 'start'; test = 'up'; target = 5 }
+    $s = Get-State
+    if ($s.test.seconds -lt 0.25) { $failed++; 'FAIL  a second start right after the first began the test anew' } else { 'PASS  a second start right after the first is ignored' }
     Send-Post '/api/test' @{ action = 'stop' }
     $s = Get-State
     if (-not $s.test.active) { $failed++; 'FAIL  a stop right after the start ended the test' } else { 'PASS  a stop right after the start is ignored' }
-    Start-Sleep -Milliseconds 600
+    Start-Sleep -Milliseconds 400
     Send-Post '/api/test' @{ action = 'stop' }
     $s = Get-State
     if ($s.test.active) { $failed++; 'FAIL  a later stop did not end the test' } else { 'PASS  a later stop ends the test' }
+    # The page puts Start where Stop was, so a bounced click on Stop lands on Start.
+    Send-Post '/api/test' @{ action = 'start'; test = 'up'; target = 5 }
+    $s = Get-State
+    if ($s.test.active) { $failed++; 'FAIL  a start right after a stop began a new test' } else { 'PASS  a start right after a stop is ignored' }
+    Start-Sleep -Milliseconds 600
+    Send-Post '/api/test' @{ action = 'start'; test = 'up'; target = 5 }
+    $s = Get-State
+    if (-not $s.test.active) { $failed++; 'FAIL  a start well after a stop did not begin a test' } else { 'PASS  a start well after a stop begins a test' }
+    Start-Sleep -Milliseconds 600
+    Send-Post '/api/test' @{ action = 'stop' }
 
     $s = Get-State
     'hook: {0} calls, {1} lost records, {2} send failures, {3} reinstalls, {4} slow, {5} not trusted, slowest {6:N3} ms' -f $s.hook.calls, $s.hook.lost, $s.hook.sendFailures, $s.hook.rehooks, $s.hook.slow, $s.hook.stalls, ($s.hook.maxOwnUs / 1000)
@@ -91,16 +104,21 @@ try {
     $page = (Invoke-WebRequest -Uri "$base/" -UseBasicParsing -TimeoutSec 5).Content
     if ($page -notmatch [regex]::Escape("var BUILD = '$($s.build)'")) { $failed++; 'FAIL  the page does not carry the build stamp of the program' } else { 'PASS  page and program carry the same build stamp' }
 
-    # The runs must still be there after a restart.
+    # The runs must still be there after a restart, each with the same numbers.
+    $before = ($s.runs | ConvertTo-Json -Depth 6 -Compress)
     Stop-Guard $proc
     $log = @(Get-Content (Get-ChildItem $data -Filter 'events-*.csv').FullName)
     $bench = @(Get-Content (Join-Path $data 'benchmarks.jsonl'))
     'recording: {0} lines, benchmark records: {1}' -f $log.Count, $bench.Count
     if ($bench.Count -ne 8) { $failed++; 'FAIL  expected 8 benchmark records' }
-    # 2 click runs of 20 clicks + 4 re-fires (2 events each), 6 wheel runs of 40 + 3 ticks, 2 header lines
-    $sent = 2 * (20 + 4) * 2 + 6 * (40 + 3) + 2
-    if ($log.Count -lt $sent) { $failed++; "FAIL  the recording has $($log.Count) lines, $sent were sent" }
     $header = $log[0].Split(',')
+    # 2 click runs of 20 clicks + 4 re-fires (2 events each) and 6 wheel runs of 40 + 3 ticks:
+    # exactly that many rows must carry an event of the scripted mouse.
+    $sent = 2 * (20 + 4) * 2 + 6 * (40 + 3)
+    $sourceIndex = [array]::IndexOf($header, 'source')
+    $kindIndex = [array]::IndexOf($header, 'kind')
+    $mouseRows = @($log | Where-Object { $_ -match '^\d' } | ForEach-Object { , $_.Split(',') } | Where-Object { $_[$sourceIndex] -eq '0' -and $_[$kindIndex] -ne '3' })
+    if ($mouseRows.Count -ne $sent) { $failed++; "FAIL  the recording has $($mouseRows.Count) rows from the scripted mouse, $sent were sent" } else { "PASS  the recording has all $sent events of the scripted mouse" }
     foreach ($col in 'sys_ms', 'lag_ms', 'flags', 'vetoed', 'stalled', 'device', 'device_how', 'judged') {
         if ($header -notcontains $col) { $failed++; "FAIL  the recording has no $col column" }
     }
@@ -115,11 +133,8 @@ try {
     for ($i = 0; $i -lt 30 -and -not $up; $i++) { Start-Sleep -Milliseconds 200; try { $s = Get-State; $up = $true } catch {} }
     if (-not $up) { $failed++; 'FAIL  did not come back after a restart' }
     elseif ($s.runs.Count -ne 8) { $failed++; "FAIL  after a restart the page shows $($s.runs.Count) runs, 8 were recorded" }
-    else {
-        $first = $s.runs[0]
-        if ($first.name -eq 'clicks' -and $first.good -eq 20 -and $first.wrong -eq 4 -and $first.wrongGaps.Count -eq 4) { 'PASS  the 8 runs are still shown after a restart' }
-        else { $failed++; 'FAIL  a run came back from disk with other numbers' }
-    }
+    elseif (($s.runs | ConvertTo-Json -Depth 6 -Compress) -ne $before) { $failed++; 'FAIL  a run came back from disk with other numbers' }
+    else { 'PASS  the 8 runs are shown after a restart, each with the same numbers' }
 } catch {
     $failed++
     'FAIL  ' + $_.Exception.Message

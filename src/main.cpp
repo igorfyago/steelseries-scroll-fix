@@ -39,7 +39,7 @@ constexpr UINT kCommandMsg = WM_APP + 11;      // from a second copy started wit
 enum Command : int { kCmdOff = 0, kCmdOn = 1, kCmdQuit = 2 };
 constexpr UINT kTimerId = 1;
 constexpr int  kHotkeyId = 1;
-enum MenuId : UINT { kMenuGuard = 1, kMenuTuner = 2, kMenuQuit = 3 };
+enum MenuId : UINT { kMenuGuard = 1, kMenuTuner = 2, kMenuQuit = 3, kMenuAutostart = 4 };
 
 // Changes with every build. The page carries the one it was served with and
 // reloads itself when the program answers with another.
@@ -51,6 +51,7 @@ struct App {
     HttpServer http;
 
     std::mutex cfgMu;
+    std::mutex commitMu;      // one settings change at a time, from reading the old ones to saving the new
     AppConfig  cfg;
 
     std::wstring dataDir, webDir;
@@ -70,6 +71,7 @@ struct App {
     uint64_t lastCalls = 0;
     int      silentChecks = 0;
     double   lastRehook = -1e9;
+    double   rehookWaitMs = 10000;    // doubles while putting the hook back does not help
 };
 
 App g;
@@ -304,17 +306,65 @@ void openTuner() {
     ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-void setGuard(bool on) {
+// Changes the settings as one step. Two changes at once (the page and the
+// hotkey, say) must not interleave, or the hook could end up running settings
+// that are neither saved nor shown.
+template <typename Change>
+void updateConfig(Change change) {
+    std::lock_guard<std::mutex> lock(g.commitMu);
     AppConfig c = currentConfig();
-    c.enabled = on;
+    change(&c);
     commitConfig(c);
+}
+
+void setGuard(bool on) {
+    updateConfig([on](AppConfig* c) { c->enabled = on; });
     trayShow(on);
+}
+
+// ---- start with Windows -------------------------------------------------------
+//
+// A value under the user's Run key, set and removed from the tray menu. Nothing
+// is installed and nothing else is written.
+
+const wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const wchar_t kRunValue[] = L"fly-by-wire";
+
+std::wstring runCommand() {
+    wchar_t path[MAX_PATH * 2] = {};
+    const DWORD n = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(sizeof(path) / sizeof(path[0])));
+    if (n == 0 || n >= sizeof(path) / sizeof(path[0])) return std::wstring();
+    return L"\"" + std::wstring(path, n) + L"\"";
+}
+
+// True when Windows will start this very copy at login.
+bool startsWithWindows() {
+    wchar_t value[MAX_PATH * 2 + 8] = {};
+    DWORD size = sizeof(value) - sizeof(wchar_t);
+    if (RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ, nullptr, value, &size) != ERROR_SUCCESS) return false;
+    const std::wstring want = runCommand();
+    return !want.empty() && _wcsicmp(value, want.c_str()) == 0;
+}
+
+void setStartWithWindows(bool on) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
+    const std::wstring command = runCommand();
+    if (on && !command.empty()) {
+        RegSetValueExW(key, kRunValue, 0, REG_SZ, reinterpret_cast<const BYTE*>(command.c_str()),
+                       static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+    } else if (!on) {
+        RegDeleteValueW(key, kRunValue);
+    }
+    RegCloseKey(key);
 }
 
 void showMenu() {
     HMENU menu = CreatePopupMenu();
     const bool on = currentConfig().enabled;
     AppendMenuW(menu, MF_STRING | (on ? MF_CHECKED : 0), kMenuGuard, L"Guard");
+    const bool autostart = startsWithWindows();
+    AppendMenuW(menu, MF_STRING | (autostart ? MF_CHECKED : 0), kMenuAutostart, L"Start with Windows");
     AppendMenuW(menu, MF_STRING | (g.httpUp ? 0 : MF_GRAYED), kMenuTuner, L"Tuner");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit");
@@ -325,6 +375,7 @@ void showMenu() {
     PostMessageW(g.hwnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
     if (cmd == kMenuGuard) setGuard(!on);
+    else if (cmd == kMenuAutostart) setStartWithWindows(!autostart);
     else if (cmd == kMenuTuner) openTuner();
     else if (cmd == kMenuQuit) DestroyWindow(g.hwnd);
 }
@@ -332,23 +383,31 @@ void showMenu() {
 // Windows removes a low level hook without telling anyone if its callback was
 // ever too slow. A moving cursor always produces callbacks, so a cursor that
 // moved while the call count stood still means the hook is gone: put it back.
+//
+// The same picture also shows without the hook being gone: while a window that
+// runs as administrator has the foreground this program is not called at all,
+// and a program can move the cursor by itself. Putting the hook back does no
+// harm then, but it does no good either, so each try that is followed by more
+// silence doubles the wait before the next one, and only the first is logged.
 void watchdog() {
     POINT p;
-    GetCursorPos(&p);
+    const bool known = GetCursorPos(&p) != FALSE;       // fails on the lock screen
     const uint64_t calls = g.engine.hookCalls.load();
-    const bool moved = p.x != g.lastCursor.x || p.y != g.lastCursor.y;
+    if (calls != g.lastCalls) g.rehookWaitMs = 10000;   // the hook is being called: it is alive
+    const bool moved = known && (p.x != g.lastCursor.x || p.y != g.lastCursor.y);
     if (moved && calls == g.lastCalls) {
         const double now = g.engine.nowMs();
-        if (++g.silentChecks >= 2 && now - g.lastRehook > 10000) {
+        if (++g.silentChecks >= 2 && now - g.lastRehook > g.rehookWaitMs) {
             g.engine.rehook();
             g.lastRehook = now;
             g.silentChecks = 0;
-            logLine("hook was silent while the cursor moved: reinstalled");
+            if (g.rehookWaitMs <= 10000) logLine("hook was silent while the cursor moved: reinstalled");
+            if (g.rehookWaitMs < 300000) g.rehookWaitMs *= 2;
         }
     } else {
         g.silentChecks = 0;
     }
-    g.lastCursor = p;
+    if (known) g.lastCursor = p;
     g.lastCalls = calls;
 
     // keep the tray icon in step with changes made on the page
@@ -364,14 +423,16 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_HOTKEY:
             // Off only. A key that could also switch the guard on would leave
-            // its state unknown to someone who cannot see the tray.
-            if (wp == kHotkeyId && currentConfig().enabled) setGuard(false);
+            // its state unknown to someone who cannot see the tray. And off
+            // whatever this program believes the state to be: the key is for
+            // when something is wrong.
+            if (wp == kHotkeyId) setGuard(false);
             return 0;
         case kCommandMsg: {
             const int command = static_cast<int>(wp);
             if (command == kCmdQuit) DestroyWindow(hwnd);
-            else if (command == kCmdOff && currentConfig().enabled) setGuard(false);
-            else if (command == kCmdOn && !currentConfig().enabled) setGuard(true);
+            else if (command == kCmdOff) setGuard(false);
+            else if (command == kCmdOn) setGuard(true);
             return 0;
         }
         case WM_TIMER:
@@ -421,9 +482,8 @@ HttpResponse handle(const HttpRequest& req, void*) {
         return res;
     }
     if (req.method == "POST" && req.path == "/api/config") {
-        AppConfig c = currentConfig();
-        applyFlat(parseFlat(req.body), &c);
-        commitConfig(c);
+        const auto posted = parseFlat(req.body);
+        updateConfig([&posted](AppConfig* c) { applyFlat(posted, c); });
         res.body = "{\"ok\":true}";
         return res;
     }
@@ -469,8 +529,8 @@ std::string productName(const Device& d) {
     // DEVPKEY_Device_BusReportedDeviceDesc
     static const DEVPROPKEY kBusName = {{0x540b947e, 0x8b40, 0x45bc, {0xa8, 0xa2, 0x6a, 0x0b, 0x89, 0x4c, 0xbd, 0xa2}}, 4};
     std::string out;
-    // "\\?\HID#VID_1038&PID_170E&MI_01&Col01#7&2dd21065&0&0000#{...}" names the
-    // device "HID\VID_1038&PID_170E&MI_01&Col01\7&2dd21065&0&0000".
+    // "\\?\HID#VID_1038&PID_170E&MI_01&Col01#7&1a2b3c4d&0&0000#{...}" names the
+    // device "HID\VID_1038&PID_170E&MI_01&Col01\7&1a2b3c4d&0&0000".
     std::wstring id = d.path;
     if (id.rfind(L"\\\\?\\", 0) == 0) id.erase(0, 4);
     const size_t brace = id.rfind(L"#{");
@@ -550,14 +610,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // Access denied means a copy with more rights already holds the name.
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\fly-by-wire");
     const DWORD mutexError = GetLastError();
-    if ((single && mutexError == ERROR_ALREADY_EXISTS) || (!single && mutexError == ERROR_ACCESS_DENIED)) {
+    bool alone = single && mutexError != ERROR_ALREADY_EXISTS;
+    if (!alone) {
+        const HWND running = FindWindowW(L"fly-by-wire", L"fly-by-wire");
         if (command >= 0) {
-            const HWND running = FindWindowW(L"fly-by-wire", L"fly-by-wire");
-            if (running) PostMessageW(running, kCommandMsg, static_cast<WPARAM>(command), 0);
-        } else if (open) {
-            openTuner();
+            // A copy that runs with more rights does not take messages from
+            // this one. Say so with the exit code instead of pretending.
+            if (!running) return 2;
+            return PostMessageW(running, kCommandMsg, static_cast<WPARAM>(command), 0) ? 0 : 2;
         }
-        return 0;
+        if (running) {
+            if (open) openTuner();
+            return 0;
+        }
+        // The name is taken but no copy has a window: one is just leaving (or
+        // just starting). Wait for it to go rather than exit and leave nothing
+        // running.
+        const DWORD waited = single ? WaitForSingleObject(single, 4000) : WAIT_FAILED;
+        if (waited != WAIT_OBJECT_0 && waited != WAIT_ABANDONED) return 0;
+        alone = true;
     }
     if (command >= 0) return 0;      // a command for a copy that is not running
 
@@ -568,10 +639,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     CreateDirectoryW(g.dataDir.c_str(), nullptr);
 
-    // Settings: start from "record only", then whatever was saved.
-    g.cfg.enabled = false;
+    // Settings: the guard on for every mouse, then whatever was saved.
     const std::string saved = readFile(g.dataDir + L"\\config.json");
     if (!saved.empty()) applyFlat(parseFlat(saved), &g.cfg);
+    const bool firstRun = saved.empty();     // nothing saved yet: show the page, there is no other sign of life but a tray icon
 
     g.page = stampBuild(loadPageResource());
     g.store.open(g.dataDir);
@@ -606,7 +677,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     GetCursorPos(&g.lastCursor);
     SetTimer(g.hwnd, kTimerId, 2000, nullptr);
     logLine("started");
-    if (open && g.httpUp) openTuner();
+    if ((open || firstRun) && g.httpUp) openTuner();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

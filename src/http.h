@@ -98,7 +98,7 @@ private:
             if (select(0, &set, nullptr, nullptr, &tv) <= 0) continue;
             SOCKET c = accept(listen_, nullptr, nullptr);
             if (c == INVALID_SOCKET) continue;
-            DWORD ms = 2000;
+            DWORD ms = 1000;
             setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms));
             setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms));
             serve(c);
@@ -134,11 +134,16 @@ private:
     }
 
     void serve(SOCKET c) {
+        // One connection is served at a time, so a request gets a few seconds
+        // as a whole, not a few seconds per read: a client that sends one byte
+        // every now and then must not keep the page from everyone else.
+        const ULONGLONG deadline = GetTickCount64() + 3000;
         std::string buf;
         size_t headEnd = std::string::npos;
         char chunk[2048];
         while (headEnd == std::string::npos) {
             if (buf.size() > kMaxHead) return reply(c, 431, "text/plain", "headers too large");
+            if (GetTickCount64() > deadline) return;
             const int n = recv(c, chunk, sizeof(chunk), 0);
             if (n <= 0) return;
             buf.append(chunk, static_cast<size_t>(n));
@@ -178,6 +183,7 @@ private:
             const size_t len = lenText.empty() ? 0 : static_cast<size_t>(strtoul(lenText.c_str(), nullptr, 10));
             if (len > kMaxBody) return reply(c, 413, "text/plain", "body too large");
             while (body.size() < len) {
+                if (GetTickCount64() > deadline) return;
                 const int n = recv(c, chunk, sizeof(chunk), 0);
                 if (n <= 0) return;
                 body.append(chunk, static_cast<size_t>(n));

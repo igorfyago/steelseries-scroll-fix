@@ -22,12 +22,11 @@
 namespace fbw {
 
 struct AppConfig {
-    bool   enabled = false;     // false: record only, change nothing
+    bool   enabled = true;      // false: record only, change nothing
     Config rules;
     // The one mouse the guard and the tests are about, by USB vendor and
-    // product id. 0 and 0: every mouse. The default is the SteelSeries Rival
-    // 500 this was built for.
-    uint16_t vid = 0x1038, pid = 0x170E;
+    // product id, chosen on the page. 0 and 0: every mouse, until one is chosen.
+    uint16_t vid = 0, pid = 0;
 };
 
 // What the page shows about the program itself.
@@ -50,8 +49,15 @@ constexpr double kTestTailMs = 600;
 // a bounce of that click.
 constexpr double kTestLeadMs = 350;
 // The mouse under test double clicks by itself, and the second click of such a
-// pair would land on Stop. A stop this soon after the start is that bounce.
+// pair would land on the button that took the place of the one just clicked.
+// A stop this soon after the start, or a start this soon after a stop, is that
+// bounce.
 constexpr double kStopGuardMs = 500;
+// A click this soon before a stop request is the click on the Stop button.
+constexpr double kStopClickMs = 400;
+// Runs are counted by rules that have changed. Runs written under older rules
+// are still listed, marked as such, but the test cards only use current ones.
+constexpr int kRunsVersion = 3;
 
 struct TestRun {
     int    id = kNoTest;
@@ -63,6 +69,8 @@ struct TestRun {
     int    fast = 0;                 // clicks: of the good ones, double clicks by hand
     float  fastest = -1;             // clicks: the shortest release to press gap a finger made, ms
     int    caught = 0;               // faults the guard removed
+    int    eaten = 0;                // clicks: presses a finger made that the guard dropped
+    int    version = kRunsVersion;   // the counting rules it was written under
     double startedT = 0, lastT = 0;
     int    goodBy[kButtons] = {};
     int    wrongBy[kButtons] = {};
@@ -76,9 +84,9 @@ struct Hist {
     uint32_t bins[kBins] = {};
     uint32_t over = 0;
     void add(double gapMs) {
-        if (gapMs < 0) return;
-        const int i = static_cast<int>(gapMs / binMs);
-        if (i >= kBins) ++over; else ++bins[i];
+        if (!(gapMs >= 0)) return;                              // negative, or not a number
+        if (gapMs >= kBins * binMs) { ++over; return; }         // compared before the cast: a gap of weeks does not fit an int
+        ++bins[static_cast<int>(gapMs / binMs)];
     }
     void clear() { for (uint32_t& b : bins) b = 0; over = 0; }
 };
@@ -119,12 +127,14 @@ public:
 
     void close() {
         std::lock_guard<std::mutex> lock(mu_);
+        if (run_.active) finish(lastNow_);
         if (log_) { fclose(log_); log_ = nullptr; }
     }
 
     // Store thread: one record from the hook.
     void add(const Rec& r) {
         std::lock_guard<std::mutex> lock(mu_);
+        if (r.t > lastNow_) lastNow_ = r.t;
         Item it;
         it.r = r;
         it.seq = ++seq_;
@@ -139,9 +149,12 @@ public:
     // and start a new recording file when the date changes.
     void poll(double now) {
         std::lock_guard<std::mutex> lock(mu_);
+        lastNow_ = now;
         if (run_.active && run_.good >= run_.target && now - run_.lastT >= kTestTailMs) finish(now);
         if (log_) fflush(log_);
-        if (++pollCount_ % 300 == 0 && today() != logDay_) {
+        ++pollCount_;
+        if (!log_ && pollCount_ % 50 == 0) openLog();           // the file could not be opened: keep trying
+        if (pollCount_ % 300 == 0 && today() != logDay_) {
             if (log_) { fclose(log_); log_ = nullptr; }
             openLog();
         }
@@ -188,6 +201,8 @@ public:
         if (id <= kNoTest || id >= kTestCount || target < 1 || target > 5000) return false;
         // A second Start for the test that only just began is the same click bouncing.
         if (run_.active && run_.id == id && now - run_.startedT < kStopGuardMs) return true;
+        // So is a Start right after a Stop: the page had put Start where Stop was.
+        if (!run_.active && now - stoppedT_ < kStopGuardMs) return true;
         if (run_.active) finish(now);
         run_ = TestRun{};
         run_.id = id;
@@ -195,7 +210,8 @@ public:
         run_.guarded = guarded;
         run_.target = target;
         run_.startedT = run_.lastT = now;
-        for (int b = 0; b < kButtons; ++b) { testUp_[b] = -1; testDown_[b] = -1; testHold_[b] = -1; suspectGap_[b] = -1; }
+        for (int b = 0; b < kButtons; ++b) { testUp_[b] = -1; testDown_[b] = -1; testHold_[b] = -1; suspectGap_[b] = -1; suspectDropped_[b] = false; }
+        lastGoodT_ = -1;
         if (log_) fprintf(log_, "# test %s start t_ms=%.3f target=%d guarded=%d\n", testName(id), now, target, guarded ? 1 : 0);
         return true;
     }
@@ -203,6 +219,15 @@ public:
     void stopTest(double now) {
         std::lock_guard<std::mutex> lock(mu_);
         if (!run_.active || now - run_.startedT < kStopGuardMs) return;
+        // The click on Stop was made with the mouse under test and has been
+        // counted as a click of the test. Take it back.
+        if (run_.id == kTestClicks && lastGoodT_ >= 0 && now - lastGoodT_ < kStopClickMs && run_.good > 0) {
+            --run_.good;
+            if (run_.goodBy[lastGoodB_] > 0) --run_.goodBy[lastGoodB_];
+            if (lastGoodFast_ && run_.fast > 0) --run_.fast;
+            run_.fastest = fastestBefore_;
+        }
+        stoppedT_ = now;
         finish(now);
     }
 
@@ -234,6 +259,7 @@ public:
         boolean(j, "hotkey", info.hotkey);
         boolean(j, "enabled", cfg.enabled);
         boolean(j, "rawInput", eng.rawInput.load());
+        boolean(j, "recording", log_ != nullptr);
         {
             char mouse[16];
             if (cfg.vid || cfg.pid) snprintf(mouse, sizeof(mouse), "%04X:%04X", cfg.vid, cfg.pid); else mouse[0] = 0;
@@ -357,11 +383,13 @@ private:
         const Rec& r = it.r;
         if (r.source == kOtherProgram) { ++counters_.otherPrograms; return; }
         if (r.source == kHardware && r.device >= 1 && static_cast<size_t>(r.device) <= devices_.size()) ++devices_[static_cast<size_t>(r.device) - 1].events;
+        if (r.kind == kHWheel) return;      // the sideways wheel is never judged and never counted
         // Known to be another mouse: recorded, but not what the counts and the
-        // tests are about. An event whose mouse could not be told is different:
-        // it went past the rules, so it stays in the counts where a fault in it shows.
+        // tests are about. An event that went past the rules for another reason
+        // (its mouse could not be told, or its callback ran too late to judge)
+        // is different: it stays in the counts, where a fault in it shows.
         if (r.source == kHardware && r.kind != kSettled && !r.judged) {
-            if (r.device) { ++counters_.otherMice; return; }
+            if (r.device && !r.stalled) { ++counters_.otherMice; return; }
             ++counters_.unknownMouse;
         }
 
@@ -391,22 +419,29 @@ private:
                     }
                     physUp_[b] = r.t;
                 }
-                if (r.verdict == static_cast<uint8_t>(Verdict::BouncePress)) ++counters_.bounces[b];
-                if (r.verdict == static_cast<uint8_t>(Verdict::BridgedPress)) ++counters_.bridged;
+                // only what really was dropped: an event let through after a stall keeps its verdict
+                if (r.blocked && r.verdict == static_cast<uint8_t>(Verdict::BouncePress)) ++counters_.bounces[b];
+                if (r.blocked && r.verdict == static_cast<uint8_t>(Verdict::BridgedPress)) ++counters_.bridged;
             }
-            if (run_.active && run_.id == kTestClicks && r.t - run_.startedT >= kTestLeadMs) {
-                if (!ours && (r.verdict == static_cast<uint8_t>(Verdict::BouncePress) ||
-                              r.verdict == static_cast<uint8_t>(Verdict::BridgedPress))) {
-                    ++run_.caught;
-                }
-                if (delivered && r.down) {
+            // The clicks test goes by what the mouse itself sent, and by when.
+            // What the guard did with an event (dropped it, held it, sent it
+            // late) decides where the press is counted, never how fast it was:
+            // a release that the guard delays must not make a double click by
+            // hand look like a fault.
+            if (!ours && run_.active && run_.id == kTestClicks && r.t - run_.startedT >= kTestLeadMs) {
+                if (r.down) {
                     const double gap = testUp_[b] >= 0 ? r.t - testUp_[b] : -1;
+                    const bool dropped = r.blocked != 0;
                     settlePress(b, -1);                 // a press with no release seen in between: judged without its hold
-                    if (gap >= 0 && gap < kSuspectGapMs) suspectGap_[b] = gap;      // judged when it is released
-                    else countPress(b, gap, false);
+                    if (gap >= 0 && gap < kSuspectGapMs) {
+                        suspectGap_[b] = gap;           // judged when it is released
+                        suspectDropped_[b] = dropped;
+                    } else {
+                        countPress(b, gap, false, dropped);
+                    }
                     testDown_[b] = r.t;
                     run_.lastT = r.t;
-                } else if (delivered && !r.down) {
+                } else {
                     const double hold = testDown_[b] >= 0 ? r.t - testDown_[b] : -1;
                     settlePress(b, hold);
                     testHold_[b] = hold;
@@ -454,17 +489,27 @@ private:
         if ((dropped || turned) && run_.active && run_.id != kTestClicks) ++run_.caught;
     }
 
-    // Counts one press of a clicks test.
-    void countPress(int b, double gap, bool bugged) {
+    // Counts one press of a clicks test. Four places it can go:
+    //   the switch fired by itself and the guard dropped it      caught
+    //   the switch fired by itself and it got through            wrong
+    //   a finger made it and the guard dropped it                eaten
+    //   a finger made it and it got through                      good
+    void countPress(int b, double gap, bool bugged, bool dropped) {
+        if (bugged && dropped) { ++run_.caught; return; }
         if (bugged) {
             ++run_.wrong;
             ++run_.wrongBy[b];
             if (run_.wrongGaps.size() < 500) run_.wrongGaps.push_back(static_cast<float>(gap));
             return;
         }
+        if (dropped) { ++run_.eaten; return; }
+        lastGoodT_ = lastNow_;
+        lastGoodB_ = b;
+        lastGoodFast_ = gap >= 0 && gap < kByHandMs;
+        fastestBefore_ = run_.fastest;
         ++run_.good;
         ++run_.goodBy[b];
-        if (gap >= 0 && gap < kByHandMs) ++run_.fast;
+        if (lastGoodFast_) ++run_.fast;
         if (gap >= 0 && (run_.fastest < 0 || gap < run_.fastest)) run_.fastest = static_cast<float>(gap);
     }
 
@@ -474,7 +519,7 @@ private:
         if (suspectGap_[b] < 0) return;
         const double gap = suspectGap_[b];
         suspectGap_[b] = -1;
-        countPress(b, gap, buggedPair(gap, testHold_[b], hold));
+        countPress(b, gap, buggedPair(gap, testHold_[b], hold), suspectDropped_[b]);
     }
 
     void finish(double now) {
@@ -482,10 +527,10 @@ private:
         run_.active = false;
         testTick_ = -1;
         if (log_) {
-            fprintf(log_, "# test %s end t_ms=%.3f good=%d wrong=%d caught=%d\n", testName(run_.id), now, run_.good,
-                    run_.wrong, run_.caught);
+            fprintf(log_, "# test %s end t_ms=%.3f good=%d wrong=%d caught=%d eaten=%d\n", testName(run_.id), now, run_.good,
+                    run_.wrong, run_.caught, run_.eaten);
         }
-        if (run_.good == 0 && run_.wrong == 0) return;   // started and stopped with nothing in it: not a run
+        if (run_.good == 0 && run_.wrong == 0 && run_.eaten == 0) return;   // started and stopped with nothing in it: not a run
         char stamp[32];
         const time_t wall = time(nullptr);
         tm local{};
@@ -498,7 +543,7 @@ private:
         const std::wstring path = dataDir_ + L"\\benchmarks.jsonl";
         FILE* f = nullptr;
         if (_wfopen_s(&f, path.c_str(), L"ab") == 0 && f) {
-            std::string line;
+            std::string line = "\n";       // if the line before was cut short, this one still starts on its own
             testJson(line, run_, run_.lastT);
             line += "\n";
             fwrite(line.data(), 1, line.size(), f);
@@ -534,11 +579,25 @@ private:
             localtime_s(&local, &now);
             wchar_t old[96];
             swprintf_s(old, L"\\events-%08d-until-%02d%02d%02d.csv", logDay_, local.tm_hour, local.tm_min, local.tm_sec);
-            if (MoveFileW(path.c_str(), (dataDir_ + old).c_str())) fresh = true;
+            if (MoveFileW(path.c_str(), (dataDir_ + old).c_str())) {
+                fresh = true;
+            } else {
+                // The old file could not be moved out of the way (someone has it
+                // open). Write this layout to a file of its own instead.
+                swprintf_s(old, L"\\events-%08d-from-%02d%02d%02d.csv", logDay_, local.tm_hour, local.tm_min, local.tm_sec);
+                log_ = _wfsopen((dataDir_ + old).c_str(), L"ab", _SH_DENYWR);
+                if (!log_) return;
+                writeLogHead(true);
+                return;
+            }
         }
         // Opened so that other programs can read the recording while it grows.
         log_ = _wfsopen(path.c_str(), L"ab", _SH_DENYWR);
         if (!log_) return;
+        writeLogHead(fresh);
+    }
+
+    void writeLogHead(bool fresh) {
         if (fresh) fprintf(log_, "%s\n", logHeader());
         fprintf(log_, "# started %s, t_ms counts from there\n", startedAt_.c_str());
         if (!configLine_.empty()) fprintf(log_, "# config t_ms=0.000 %s\n", configLine_.c_str());
@@ -580,8 +639,9 @@ private:
         while (fgets(buf, sizeof(buf), f)) {
             line += buf;
             if (line.empty() || line.back() != '\n') continue;      // a long line: keep reading it
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
             TestRun t;
-            if (parseRun(line, &t)) {
+            if (line.size() > 2 && line.front() == '{' && line.back() == '}' && parseRun(line, &t)) {
                 runs_.push_back(t);
                 if (runs_.size() > kKeepRuns) runs_.erase(runs_.begin());
             }
@@ -620,6 +680,7 @@ private:
         }
     }
     static bool parseRun(const std::string& line, TestRun* t) {
+        t->version = static_cast<int>(numberOf(line, "v"));      // 0 when written before runs carried one
         const std::string name = textOf(line, "name");
         for (int i = 1; i < kTestCount; ++i) if (name == testName(i)) t->id = i;
         if (t->id == kNoTest) return false;
@@ -631,6 +692,7 @@ private:
         t->fast = static_cast<int>(numberOf(line, "fast"));
         t->fastest = valueOf(line, "fastest") ? static_cast<float>(numberOf(line, "fastest")) : -1;
         t->caught = static_cast<int>(numberOf(line, "caught"));
+        t->eaten = static_cast<int>(numberOf(line, "eaten"));
         t->startedT = 0;
         t->lastT = numberOf(line, "seconds") * 1000.0;
         int i = 0;
@@ -638,8 +700,8 @@ private:
         i = 0;
         eachOf(line, "wrongBy", [&](double d) { if (i < kButtons) t->wrongBy[i++] = static_cast<int>(d); });
         eachOf(line, "wrongGaps", [&](double d) { if (t->wrongGaps.size() < 500) t->wrongGaps.push_back(static_cast<float>(d)); });
-        t->finishedAt = textOf(line, "finishedAt");
-        return true;
+        for (char c : textOf(line, "finishedAt")) if (plain(c) && t->finishedAt.size() < 32) t->finishedAt += c;
+        return t->good >= 0 && t->wrong >= 0 && t->caught >= 0 && t->eaten >= 0 && t->target >= 0;
     }
 
     // ---- json -------------------------------------------------------------
@@ -685,6 +747,8 @@ private:
         j += "\"name\":\"";
         j += testName(t.id);
         j += "\",";
+        num(j, "v", t.version);
+        boolean(j, "old", t.version != kRunsVersion);
         boolean(j, "active", t.active);
         boolean(j, "guarded", t.guarded);
         num(j, "target", t.target);
@@ -693,6 +757,7 @@ private:
         num(j, "fast", t.fast);
         num(j, "fastest", t.fastest, 1);
         num(j, "caught", t.caught);
+        num(j, "eaten", t.eaten);
         num(j, "seconds", ((t.active ? now : t.lastT) - t.startedT) / 1000.0, 1);
         arr(j, "goodBy", t.goodBy, kButtons);
         arr(j, "wrongBy", t.wrongBy, kButtons);
@@ -734,7 +799,14 @@ private:
     double testDown_[kButtons] = {-1, -1, -1, -1, -1};
     double testHold_[kButtons] = {-1, -1, -1, -1, -1};       // how long the click before lasted
     double suspectGap_[kButtons] = {-1, -1, -1, -1, -1};     // a press waiting for its release to be judged
+    bool   suspectDropped_[kButtons] = {};                    // and whether the guard dropped it
     double testTick_ = -1;
+    double lastNow_ = 0;             // the latest time this store was told
+    double stoppedT_ = -1e9;         // when a test was last stopped by hand
+    double lastGoodT_ = -1;          // the last press counted as made by a finger: when, which button,
+    int    lastGoodB_ = 0;           // whether it was a fast one, and the fastest gap before it
+    bool   lastGoodFast_ = false;
+    float  fastestBefore_ = -1;
 };
 
 }  // namespace fbw

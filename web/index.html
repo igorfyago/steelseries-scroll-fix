@@ -79,7 +79,7 @@
   <h1>fly-by-<span>wire</span></h1>
   <label class="guard" id="guardLabel"><input type="checkbox" id="guard">Guard</label>
   <select id="mouse" title="The mouse the guard and the tests apply to"></select>
-  <span class="dot hidden" id="offline" title="fly-by-wire is not answering"></span>
+  <span class="dot hidden" id="offline"></span>
   <nav id="topnav">
     <button class="tab-btn on" data-tab="tests">Tests</button>
     <button class="tab-btn" data-tab="guard">Rules</button>
@@ -97,7 +97,8 @@
         <div class="stat"><span>Bugged double clicks</span><b class="wrong-n">0</b></div>
         <div class="stat"><span>Double clicks by hand</span><b class="fast-n">0</b></div>
         <div class="stat"><span>Fastest by hand, ms</span><b class="fastest-n"></b></div>
-        <div class="stat"><span>Dropped by guard</span><b class="caught-n">0</b></div>
+        <div class="stat"><span>Bugged ones dropped by guard</span><b class="caught-n">0</b></div>
+        <div class="stat"><span>Clicks by hand dropped by guard</span><b class="eaten-n">0</b></div>
         <div class="row end"><button class="primary start">Start</button><button class="ghost stop hidden">Stop</button></div>
       </div>
       <div class="card" data-test="up" data-target="200">
@@ -231,8 +232,10 @@
   document.querySelectorAll('[data-key]').forEach(function (el) {
     el.addEventListener('change', function () {
       if (el.type === 'checkbox' && !meant(el)) { el.checked = !el.checked; return; }
+      if (el.type !== 'checkbox' && (el.value === '' || isNaN(Number(el.value)))) { el.dataset.resync = '1'; return; }
       var body = {};
       body[el.dataset.key] = el.type === 'checkbox' ? el.checked : Number(el.value);
+      el.dataset.resync = '1';      // show what the program made of it, even while the field has the focus
       post('/api/config', body);
     });
   });
@@ -260,7 +263,7 @@
   });
 
   function lastRun(name) {
-    for (var i = state.runs.length - 1; i >= 0; i--) if (state.runs[i].name === name) return state.runs[i];
+    for (var i = state.runs.length - 1; i >= 0; i--) if (state.runs[i].name === name && !state.runs[i].old) return state.runs[i];
     return null;
   }
 
@@ -275,6 +278,11 @@
       if (fast) fast.textContent = t ? (t.fast || 0) : 0;
       var fastest = card.querySelector('.fastest-n');
       if (fastest) fastest.textContent = t && t.fastest >= 0 ? t.fastest.toFixed(0) : '';
+      var eaten = card.querySelector('.eaten-n');
+      if (eaten) {
+        eaten.textContent = t ? (t.eaten || 0) : 0;
+        eaten.classList.toggle('bad', !!(t && t.eaten));
+      }
       card.querySelector('.good-n').textContent = good;
       var w = card.querySelector('.wrong-n');
       w.textContent = wrong;
@@ -287,7 +295,7 @@
     var html = '';
     for (var i = state.runs.length - 1; i >= 0; i--) {
       var r = state.runs[i];
-      html += '<tr><td>' + r.finishedAt + '</td><td>' + (TEST_LABEL[r.name] || r.name) + '</td><td>' + (r.guarded ? 'on' : 'off') +
+      html += '<tr' + (r.old ? ' class="other" title="Counted under older rules"' : '') + '><td>' + r.finishedAt + '</td><td>' + (TEST_LABEL[r.name] || r.name) + '</td><td>' + (r.guarded ? 'on' : 'off') +
               '</td><td>' + r.good + '</td><td' + (r.wrong ? ' class="bad"' : '') + '>' + r.wrong + '</td><td>' + r.caught +
               '</td><td>' + r.wrongGaps.map(function (g) { return g < 0 ? '?' : g.toFixed(1); }).join('  ') + '</td></tr>';
     }
@@ -300,12 +308,13 @@
   var mouseList = '';
   function drawMouse() {
     var options = [['', 'Every mouse']], seen = {};
-    (state.devices || []).forEach(function (d) {
+    // Without raw input the program cannot tell mice apart: only "Every mouse" filters then.
+    (state.rawInput ? state.devices || [] : []).forEach(function (d) {
       if (seen[d.id] || d.id === '0000:0000') return;
       seen[d.id] = true;
       options.push([d.id, d.name || d.id]);
     });
-    if (state.mouse && !seen[state.mouse]) options.push([state.mouse, state.mouse === '1038:170E' ? 'SteelSeries Rival 500' : state.mouse]);
+    if (state.rawInput && state.mouse && !seen[state.mouse]) options.push([state.mouse, state.mouse === '1038:170E' ? 'SteelSeries Rival 500' : state.mouse]);
     var key = JSON.stringify(options);
     var sel = $('mouse');
     if (key !== mouseList) {
@@ -318,8 +327,8 @@
         sel.appendChild(opt);
       });
     }
-    if (document.activeElement !== sel) sel.value = state.mouse || '';
-    sel.disabled = !state.rawInput;
+    if (key !== sel.dataset.built || document.activeElement !== sel) sel.value = state.mouse || '';
+    sel.dataset.built = key;
   }
 
   function deviceName(n) {
@@ -335,7 +344,8 @@
     document.querySelectorAll('[data-key]').forEach(function (el) {
       var v = state.config[el.dataset.key];
       if (el.type === 'checkbox') el.checked = !!v;
-      else if (document.activeElement !== el) el.value = v;   // do not overwrite a number being typed
+      else if (document.activeElement !== el || el.dataset.resync === '2') { el.value = v; el.dataset.resync = ''; }   // do not overwrite a number being typed
+      else if (el.dataset.resync === '1') el.dataset.resync = '2';     // the next state is the one that has the change in it
     });
     var c = state.counters;
     $('c-presses').textContent = c.presses[0] + ' / ' + c.presses[1] + ' / ' + (c.presses[2] + c.presses[3] + c.presses[4]);
@@ -417,7 +427,6 @@
   // not decided yet. Violet: sent by the guard itself. Dim: another mouse or
   // another program, not judged. No colour: passed.
   function eventClass(e) {
-    if (e.src === 0 && e.k !== 3 && !e.j && !e.dev) return 'dropped';     // went past the rules: its mouse was not recognised
     if (e.src === 1 || (e.src === 0 && e.k !== 3 && !e.j)) return 'other';
     if (e.src === 2) return 'sent';
     if (e.x && (e.v === 3 || isHeldTick(e))) {
@@ -441,7 +450,7 @@
       for (var j = i - 1; j >= 0 && j >= i - 40; j--) {
         var h = list[j];
         if (!h.x || h.fate || s.t - h.t > 1000) continue;
-        if (wheel ? !isHeldTick(h) : h.v !== 3) continue;
+        if (wheel ? !isHeldTick(h) : (h.v !== 3 || h.b !== s.b)) continue;
         if (decider && (st === 4 || st === 5)) h.fate = (h.w > 0) === (decider.w > 0) ? 3 : st;
         else h.fate = st;
         if (!decider) break;      // a timer settles one held event at a time
@@ -469,7 +478,8 @@
 
   function poll() {
     fetch('/api/state?since=' + seq).then(function (r) { return r.json(); }).then(function (s) {
-      $('offline').classList.add('hidden');
+      $('offline').classList.toggle('hidden', s.recording !== false);
+      $('offline').title = 'fly-by-wire cannot write its recording file';
       // The program was replaced by a newer build: this page belongs to the old one.
       if (s.build && BUILD.indexOf('FBW_BUILD') < 0 && s.build !== BUILD) { location.reload(); return; }
       if (s.seq < seq) rows = [];            // the program was restarted
@@ -480,6 +490,7 @@
       state = s;
       draw();
     }).catch(function () {
+      $('offline').title = 'fly-by-wire is not answering';
       $('offline').classList.remove('hidden');
     }).then(function () { setTimeout(poll, 250); });
   }
