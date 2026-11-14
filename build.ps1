@@ -5,7 +5,7 @@ tools or libraries are needed.
   build.ps1                 tests, then the program and the self test
   build.ps1 -Only tests     just the rule tests (also runs them)
   build.ps1 -Only app       just fly-by-wire.exe
-  build.ps1 -Only selftest  just selftest.exe
+  build.ps1 -Only selftest  just the tools: selftest.exe, inject.exe (scripted mouse), replay.exe
   build.ps1 -SrcDir <dir>   take the sources from another folder (used by the
                             mutation check, which builds deliberately broken copies)
 #>
@@ -48,16 +48,17 @@ if ($Only -in 'all', 'tests') {
 }
 
 if ($Only -in 'all', 'selftest') {
-    Invoke-Vc 'self test and scripted mouse: compile' @(
+    Invoke-Vc 'self test, scripted mouse and replay: compile' @(
         "$cl /I`"$SrcDir`" `"$SrcDir\selftest.cpp`" /Fe:selftest.exe /Fo:selftest.obj /link /SUBSYSTEM:CONSOLE user32.lib gdi32.lib winmm.lib",
-        "$cl /I`"$SrcDir`" `"$SrcDir\inject.cpp`" /Fe:inject.exe /Fo:inject.obj /link /SUBSYSTEM:CONSOLE user32.lib gdi32.lib winmm.lib"
+        "$cl /I`"$SrcDir`" `"$SrcDir\inject.cpp`" /Fe:inject.exe /Fo:inject.obj /link /SUBSYSTEM:CONSOLE user32.lib gdi32.lib winmm.lib",
+        "$cl /I`"$SrcDir`" `"$SrcDir\replay.cpp`" /Fe:replay.exe /Fo:replay.obj /link /SUBSYSTEM:CONSOLE"
     )
 }
 
 if ($Only -in 'all', 'app') {
     Invoke-Vc 'program: compile' @(
         "rc /nologo /fo fly-by-wire.res `"$SrcDir\fly-by-wire.rc`"",
-        "$cl /I`"$SrcDir`" `"$SrcDir\main.cpp`" fly-by-wire.res /Fe:fly-by-wire.exe /Fo:main.obj /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib ws2_32.lib gdi32.lib advapi32.lib"
+        "$cl /I`"$SrcDir`" `"$SrcDir\main.cpp`" fly-by-wire.res /Fe:fly-by-wire.exe /Fo:main.obj /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib ws2_32.lib gdi32.lib advapi32.lib hid.lib"
     )
 }
 

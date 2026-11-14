@@ -3,7 +3,7 @@
 // ticks into the system the way a mouse would, and compares what that window
 // receives with what the rules say it should receive.
 //
-// It takes over the mouse for about six seconds: the cursor is held inside the
+// It takes over the mouse for about twenty seconds: the cursor is held inside the
 // test window so no scripted click can land on anything else.
 //
 //   selftest.exe          exit code 0 when every scenario passes
@@ -84,9 +84,11 @@ struct Scenario {
     std::vector<Step> steps;
     const char*       expect;
     double            lastAtLeast;   // earliest time for the last received event, 0 to skip
+    double            lateTimerMs;   // make the hold timer fire this much late
 };
 
 void run(const Scenario& s) {
+    g_engine.testTimerLateMs.store(s.lateTimerMs);
     g_engine.setConfig(s.rules, s.enabled);
     Sleep(600);                       // let the setting land and earlier timing go stale
     { std::lock_guard<std::mutex> lock(g_mu); g_got.clear(); }
@@ -125,28 +127,54 @@ void run(const Scenario& s) {
 
 DWORD WINAPI driver(void*) {
     Config off;
-    off.clickGuard = false; off.holdGuard = false; off.wheelGuard = false;
+    off.clickGuard = false;
+    off.wheelGuard = false;
+    off.firstMs = 0;
+    off.wheelFlip = false;
     Config c1 = off;
     c1.clickGuard = true;
     for (double& b : c1.bounceMs) b = 40;
     Config c2 = off;
-    c2.holdGuard = true; c2.holdMs = 25;
+    c2.holdMs[Left] = 25;
+    // the wheel rule with its extras off: a suspect tick is dropped, the first tick is not held
     Config w1 = off;
     w1.wheelGuard = true; w1.reverseMs = 150; w1.confirmMs = 200;
+    // the wheel rule as fitted to the Rival 500
+    Config fit = off;
+    fit.wheelGuard = true; fit.reverseMs = 70; fit.confirmMs = 50; fit.firstMs = 40; fit.wheelFlip = true;
 
     const Scenario all[] = {
         {"guard off: everything arrives", false, c1,
-         {{0, 'D'}, {40, 'U'}, {45, 'D'}, {50, 'U'}, {150, '+'}, {180, '-'}, {210, '+'}}, "DUDU+-+", 0},
+         {{0, 'D'}, {40, 'U'}, {45, 'D'}, {50, 'U'}, {150, '+'}, {180, '-'}, {210, '+'}}, "DUDU+-+", 0, 0},
         {"C1: re-press 5 ms after release is dropped", true, c1,
-         {{0, 'D'}, {50, 'U'}, {55, 'D'}, {60, 'U'}, {360, 'D'}, {410, 'U'}}, "DUDU", 0},
+         {{0, 'D'}, {50, 'U'}, {55, 'D'}, {60, 'U'}, {360, 'D'}, {410, 'U'}}, "DUDU", 0, 0},
+        {"C1: a double click by hand (70 ms apart) passes", true, c1,
+         {{0, 'D'}, {60, 'U'}, {130, 'D'}, {190, 'U'}}, "DUDU", 0, 0},
         {"C2: brief opening during a hold is bridged", true, c2,
-         {{0, 'D'}, {60, 'U'}, {66, 'D'}, {260, 'U'}}, "DU", 285},
-        {"W1: stray reversed tick in mid scroll is dropped", true, w1,
-         {{0, '+'}, {30, '+'}, {60, '-'}, {90, '+'}}, "+++", 0},
-        {"W1: real reversal delivers both ticks", true, w1,
-         {{0, '+'}, {40, '-'}, {80, '-'}}, "+--", 0},
-        {"guard switched off again: the bounce arrives", false, c1,
-         {{0, 'D'}, {50, 'U'}, {55, 'D'}, {60, 'U'}}, "DUDU", 0},
+         {{0, 'D'}, {60, 'U'}, {66, 'D'}, {260, 'U'}}, "DU", 285, 0},
+        // The hold timer is made to fire 40 ms late, so the second press
+        // arrives after the hold ran out but before the timer got to send the
+        // release. The release must still reach the window before that press.
+        {"C2: a press that beats the late timer still comes after the release", true, c2,
+         {{0, 'D'}, {60, 'U'}, {95, 'D'}, {200, 'U'}}, "DUDU", 0, 40},
+        {"wheel, dropping: stray reversed tick in mid scroll is dropped", true, w1,
+         {{0, '+'}, {30, '+'}, {60, '-'}, {90, '+'}}, "+++", 0, 0},
+        {"wheel, dropping: real reversal delivers both ticks", true, w1,
+         {{0, '+'}, {40, '-'}, {80, '-'}}, "+--", 0, 0},
+        {"wheel, fitted: a misread tick in mid stroke is turned round", true, fit,
+         {{0, '+'}, {10, '+'}, {20, '+'}, {24, '-'}, {32, '+'}}, "+++++", 0, 0},
+        {"wheel, fitted: misread first tick, the third tick decides", true, fit,
+         {{0, '-'}, {10, '+'}, {20, '+'}}, "+++", 0, 0},
+        {"wheel, fitted: misread second tick, the first is not blamed", true, fit,
+         {{0, '+'}, {10, '-'}, {20, '+'}}, "+++", 0, 0},
+        {"wheel, fitted: a single notch arrives 40 ms late", true, fit,
+         {{0, '+'}}, "+", 40, 0},
+        {"wheel, fitted: a misread last tick is turned round, 50 ms late", true, fit,
+         {{0, '+'}, {10, '+'}, {30, '-'}}, "+++", 80, 0},
+        {"wheel, fitted: a real turn after a pause keeps every notch", true, fit,
+         {{0, '+'}, {10, '+'}, {150, '-'}, {160, '-'}}, "++--", 0, 0},
+        {"guard switched off again: the bounce and the stray tick arrive", false, fit,
+         {{0, 'D'}, {50, 'U'}, {55, 'D'}, {60, 'U'}, {150, '+'}, {160, '+'}, {164, '-'}, {172, '+'}}, "DUDU++-+", 0, 0},
     };
     Sleep(300);
     for (const Scenario& s : all) run(s);

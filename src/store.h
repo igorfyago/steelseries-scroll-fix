@@ -7,6 +7,8 @@
 // keyboard input, mouse movement.
 #pragma once
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <deque>
 #include <share.h>
@@ -21,6 +23,17 @@ namespace fbw {
 struct AppConfig {
     bool   enabled = false;     // false: record only, change nothing
     Config rules;
+    // The one mouse the guard and the tests are about, by USB vendor and
+    // product id. 0 and 0: every mouse. The default is the SteelSeries Rival
+    // 500 this was built for.
+    uint16_t vid = 0x1038, pid = 0x170E;
+};
+
+// What the page shows about the program itself.
+struct AppInfo {
+    int         port = 0;
+    bool        hotkey = false;     // the keyboard off switch is registered
+    const char* build = "";
 };
 
 enum TestId : int { kNoTest = 0, kTestClicks = 1, kTestUp = 2, kTestDown = 3, kTestCount = 4 };
@@ -29,23 +42,32 @@ inline const char* testName(int id) {
     return (id > 0 && id < kTestCount) ? names[id] : "";
 }
 
-// A press that follows a release this soon cannot be a deliberate second click
-// in a test that asks for one click at a time.
-constexpr double kExtraPressMs = 200;
+// A press that follows a release sooner than this was not made by a finger:
+// the fastest deliberate double click recorded from the owner's hand left
+// 66 ms between release and press, and fast clickers in general stay above
+// 35. Only such presses count as the fault. Double clicks by hand are needed
+// in games and are never counted against the mouse.
+constexpr double kBuggedPressMs = 50;
+// Presses up to this long after a release are listed as double clicks by hand.
+constexpr double kByHandMs = 500;
 // A test ends this long after its last counted event, so a late bounce or a
 // tick from the wheel settling still lands inside the test.
 constexpr double kTestTailMs = 600;
 // The click on the Start button is not part of the clicks test, and neither is
 // a bounce of that click.
 constexpr double kTestLeadMs = 350;
+// The mouse under test double clicks by itself, and the second click of such a
+// pair would land on Stop. A stop this soon after the start is that bounce.
+constexpr double kStopGuardMs = 500;
 
 struct TestRun {
     int    id = kNoTest;
     bool   active = false;
     bool   guarded = false;          // guard state while it ran
     int    target = 0;
-    int    good = 0;                 // clicks: deliberate presses. scroll: ticks in the asked direction
-    int    wrong = 0;                // clicks: extra presses. scroll: ticks the other way
+    int    good = 0;                 // clicks: presses a finger made. scroll: ticks in the asked direction
+    int    wrong = 0;                // clicks: presses no finger made. scroll: ticks the other way
+    int    fast = 0;                 // clicks: of the good ones, double clicks by hand
     int    caught = 0;               // faults the guard removed
     double startedT = 0, lastT = 0;
     int    goodBy[kButtons] = {};
@@ -74,7 +96,9 @@ struct Counters {
     uint64_t ticks = 0;
     uint64_t reversalsDropped = 0;
     uint64_t reversalsConfirmed = 0;
+    uint64_t ticksTurned = 0;
     uint64_t otherPrograms = 0;
+    uint64_t otherMice = 0;
 };
 
 class Store {
@@ -88,6 +112,13 @@ public:
         holdLen_.binMs = 2;
         reverseGap_.binMs = 5;
         sameGap_.binMs = 5;
+        const time_t now = time(nullptr);
+        tm local{};
+        localtime_s(&local, &now);
+        char stamp[32];
+        strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &local);
+        startedAt_ = stamp;
+        loadRuns();
         openLog();
     }
 
@@ -109,17 +140,59 @@ public:
         writeLog(it);
     }
 
-    // Store thread, a few times a second: end a test whose tail has run out.
+    // Store thread, a few times a second: end a test whose tail has run out,
+    // and start a new recording file when the date changes.
     void poll(double now) {
         std::lock_guard<std::mutex> lock(mu_);
-        if (run_.active && run_.good >= run_.target && now - run_.lastT >= kTestTailMs) finish();
+        if (run_.active && run_.good >= run_.target && now - run_.lastT >= kTestTailMs) finish(now);
         if (log_) fflush(log_);
+        if (++pollCount_ % 300 == 0 && today() != logDay_) {
+            if (log_) { fclose(log_); log_ = nullptr; }
+            openLog();
+        }
+    }
+
+    // The thresholds in force go into the recording, so every row can be read
+    // against the settings it was judged with.
+    void noteConfig(const AppConfig& c, double now) {
+        std::lock_guard<std::mutex> lock(mu_);
+        char buf[400];
+        snprintf(buf, sizeof(buf),
+                 "enabled=%d mouse=%04X:%04X click=%d bounce=%.0f/%.0f/%.0f/%.0f/%.0f hold=%.0f/%.0f/%.0f/%.0f/%.0f "
+                 "wheel=%d reverse=%.0f confirm=%.0f first=%.0f flip=%d",
+                 c.enabled ? 1 : 0, c.vid, c.pid, c.rules.clickGuard ? 1 : 0, c.rules.bounceMs[0], c.rules.bounceMs[1],
+                 c.rules.bounceMs[2], c.rules.bounceMs[3], c.rules.bounceMs[4], c.rules.holdMs[0], c.rules.holdMs[1],
+                 c.rules.holdMs[2], c.rules.holdMs[3], c.rules.holdMs[4], c.rules.wheelGuard ? 1 : 0,
+                 c.rules.reverseMs, c.rules.confirmMs, c.rules.firstMs, c.rules.wheelFlip ? 1 : 0);
+        configLine_ = buf;
+        if (log_) fprintf(log_, "# config t_ms=%.3f %s\n", now, configLine_.c_str());
+    }
+
+    // A mouse was seen for the first time: its number and name go into the
+    // recording, so the device column can be read later.
+    void noteDevice(int number, const Device& d, const std::string& name) {
+        std::lock_guard<std::mutex> lock(mu_);
+        DeviceRow row;
+        row.vid = d.vid;
+        row.pid = d.pid;
+        // Both end up in JSON and in the page, so only plain characters are kept.
+        for (char c : name) row.name += plain(c) ? c : ' ';
+        for (const wchar_t* c = d.path; *c; ++c) row.path += (*c < 127 && plain(static_cast<char>(*c))) ? static_cast<char>(*c) : '?';
+        if (static_cast<int>(devices_.size()) < number) devices_.resize(static_cast<size_t>(number));
+        devices_[static_cast<size_t>(number - 1)] = row;
+        if (log_) fprintf(log_, "# device %d vid=%04X pid=%04X name=%s path=%s\n", number, d.vid, d.pid, row.name.c_str(), row.path.c_str());
+    }
+
+    static bool plain(char c) {
+        return c >= 32 && c < 127 && c != '"' && c != '\\' && c != '<' && c != '>' && c != '&' && c != '\'';
     }
 
     bool startTest(int id, int target, bool guarded, double now) {
         std::lock_guard<std::mutex> lock(mu_);
         if (id <= kNoTest || id >= kTestCount || target < 1 || target > 5000) return false;
-        if (run_.active) finish();
+        // A second Start for the test that only just began is the same click bouncing.
+        if (run_.active && run_.id == id && now - run_.startedT < kStopGuardMs) return true;
+        if (run_.active) finish(now);
         run_ = TestRun{};
         run_.id = id;
         run_.active = true;
@@ -127,12 +200,14 @@ public:
         run_.target = target;
         run_.startedT = run_.lastT = now;
         for (int b = 0; b < kButtons; ++b) testUp_[b] = -1;
+        if (log_) fprintf(log_, "# test %s start t_ms=%.3f target=%d guarded=%d\n", testName(id), now, target, guarded ? 1 : 0);
         return true;
     }
 
-    void stopTest() {
+    void stopTest(double now) {
         std::lock_guard<std::mutex> lock(mu_);
-        if (run_.active) finish();
+        if (!run_.active || now - run_.startedT < kStopGuardMs) return;
+        finish(now);
     }
 
     void resetStats() {
@@ -149,15 +224,37 @@ public:
         return seq_;
     }
 
-    std::string stateJson(uint64_t since, const AppConfig& cfg, const Engine& eng, double now, int port) {
+    std::string stateJson(uint64_t since, const AppConfig& cfg, const Engine& eng, double now, const AppInfo& info) {
         std::lock_guard<std::mutex> lock(mu_);
         std::string j;
         j.reserve(16384);
         j += "{";
         num(j, "seq", static_cast<double>(seq_));
         num(j, "now", now, 1);
-        num(j, "port", port);
+        num(j, "port", info.port);
+        j += "\"build\":\"";
+        j += info.build;
+        j += "\",";
+        boolean(j, "hotkey", info.hotkey);
         boolean(j, "enabled", cfg.enabled);
+        boolean(j, "rawInput", eng.rawInput.load());
+        {
+            char mouse[16];
+            if (cfg.vid || cfg.pid) snprintf(mouse, sizeof(mouse), "%04X:%04X", cfg.vid, cfg.pid); else mouse[0] = 0;
+            j += "\"mouse\":\"";
+            j += mouse;
+            j += "\",";
+        }
+        j += "\"devices\":[";
+        for (size_t i = 0; i < devices_.size(); ++i) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%s{\"n\":%zu,\"id\":\"%04X:%04X\",\"events\":%llu,\"name\":\"", i ? "," : "", i + 1,
+                     devices_[i].vid, devices_[i].pid, static_cast<unsigned long long>(devices_[i].events));
+            j += buf;
+            j += devices_[i].name;
+            j += "\"}";
+        }
+        j += "],";
 
         j += "\"config\":{";
         boolean(j, "clickGuard", cfg.rules.clickGuard);
@@ -165,11 +262,15 @@ public:
         num(j, "bounceRight", cfg.rules.bounceMs[Right]);
         num(j, "bounceMiddle", cfg.rules.bounceMs[Middle]);
         num(j, "bounceSide", cfg.rules.bounceMs[X1]);
-        boolean(j, "holdGuard", cfg.rules.holdGuard);
-        num(j, "holdMs", cfg.rules.holdMs);
+        num(j, "holdLeft", cfg.rules.holdMs[Left]);
+        num(j, "holdRight", cfg.rules.holdMs[Right]);
+        num(j, "holdMiddle", cfg.rules.holdMs[Middle]);
+        num(j, "holdSide", cfg.rules.holdMs[X1]);
         boolean(j, "wheelGuard", cfg.rules.wheelGuard);
+        boolean(j, "wheelFlip", cfg.rules.wheelFlip);
         num(j, "reverseMs", cfg.rules.reverseMs);
         num(j, "confirmMs", cfg.rules.confirmMs);
+        num(j, "firstMs", cfg.rules.firstMs);
         endObj(j);
 
         j += "\"counters\":{";
@@ -179,7 +280,9 @@ public:
         num(j, "ticks", static_cast<double>(counters_.ticks));
         num(j, "reversalsDropped", static_cast<double>(counters_.reversalsDropped));
         num(j, "reversalsConfirmed", static_cast<double>(counters_.reversalsConfirmed));
+        num(j, "ticksTurned", static_cast<double>(counters_.ticksTurned));
         num(j, "otherPrograms", static_cast<double>(counters_.otherPrograms));
+        num(j, "otherMice", static_cast<double>(counters_.otherMice));
         endObj(j);
 
         j += "\"hook\":{";
@@ -187,6 +290,10 @@ public:
         num(j, "rehooks", eng.rehooks.load());
         num(j, "lost", static_cast<double>(eng.lostRecords.load()));
         num(j, "sendFailures", eng.sendFailures.load());
+        num(j, "slow", eng.slowCalls.load());
+        num(j, "stalls", eng.stalls.load());
+        num(j, "maxOwnUs", eng.maxOwnUs.load());
+        num(j, "unknownDevice", eng.unknownDevice.load());
         endObj(j);
 
         j += "\"test\":";
@@ -216,11 +323,12 @@ public:
             if (it.seq <= since) continue;
             if (!first) j += ",";
             first = false;
-            char buf[200];
+            char buf[240];
             snprintf(buf, sizeof(buf),
-                     "{\"s\":%llu,\"t\":%.1f,\"k\":%d,\"b\":%d,\"d\":%d,\"w\":%d,\"src\":%d,\"x\":%d,\"v\":%d,\"st\":%d,\"g\":%.1f}",
+                     "{\"s\":%llu,\"t\":%.1f,\"k\":%d,\"b\":%d,\"d\":%d,\"w\":%d,\"src\":%d,\"x\":%d,\"v\":%d,\"st\":%d,\"g\":%.1f,"
+                     "\"dev\":%d,\"j\":%d}",
                      static_cast<unsigned long long>(it.seq), it.r.t, it.r.kind, it.r.button, it.r.down, it.r.delta,
-                     it.r.source, it.r.blocked, it.r.verdict, it.r.settled, it.gap);
+                     it.r.source, it.r.blocked, it.r.verdict, it.r.settled, it.gap, it.r.device, it.r.judged);
             j += buf;
         }
         j += "]}";
@@ -230,6 +338,7 @@ public:
 private:
     static constexpr size_t kKeep = 2000;
     static constexpr size_t kSend = 300;
+    static constexpr size_t kKeepRuns = 40;
 
     struct Item {
         Rec      r;
@@ -238,17 +347,24 @@ private:
         float    gap = -1;     // physical gap to the event before, ms
     };
 
+    struct DeviceRow {
+        uint16_t    vid = 0, pid = 0;
+        std::string name;      // as the device calls itself
+        std::string path;
+        uint64_t    events = 0;
+    };
+
     // ---- accounting -------------------------------------------------------
 
     void account(Item& it) {
         const Rec& r = it.r;
         if (r.source == kOtherProgram) { ++counters_.otherPrograms; return; }
+        if (r.source == kHardware && r.device >= 1 && static_cast<size_t>(r.device) <= devices_.size()) ++devices_[static_cast<size_t>(r.device) - 1].events;
+        // Another mouse: recorded, but it is not what the counts and the tests are about.
+        if (r.source == kHardware && r.kind != kSettled && !r.judged) { ++counters_.otherMice; return; }
 
         if (r.kind == kSettled) {
-            if (r.settled == static_cast<uint8_t>(Settled::WheelDropped)) {
-                ++counters_.reversalsDropped;
-                if (run_.active && run_.id != kTestClicks) ++run_.caught;
-            }
+            countWheelOutcome(r.settled);
             return;
         }
 
@@ -283,13 +399,14 @@ private:
                 }
                 if (delivered && r.down) {
                     const double gap = testUp_[b] >= 0 ? r.t - testUp_[b] : -1;
-                    if (gap >= 0 && gap < kExtraPressMs) {
+                    if (gap >= 0 && gap < kBuggedPressMs) {
                         ++run_.wrong;
                         ++run_.wrongBy[b];
                         if (run_.wrongGaps.size() < 500) run_.wrongGaps.push_back(static_cast<float>(gap));
                     } else {
                         ++run_.good;
                         ++run_.goodBy[b];
+                        if (gap >= 0 && gap < kByHandMs) ++run_.fast;
                     }
                     run_.lastT = r.t;
                 } else if (delivered && !r.down) {
@@ -309,11 +426,7 @@ private:
                 }
                 physTick_ = r.t;
                 physDir_ = dir;
-                if (r.settled == static_cast<uint8_t>(Settled::WheelDropped)) {
-                    ++counters_.reversalsDropped;
-                    if (run_.active && run_.id != kTestClicks) ++run_.caught;
-                }
-                if (r.settled == static_cast<uint8_t>(Settled::WheelConfirmed)) ++counters_.reversalsConfirmed;
+                countWheelOutcome(r.settled);
             }
             if (run_.active && (run_.id == kTestUp || run_.id == kTestDown) && delivered) {
                 const int want = run_.id == kTestUp ? 1 : -1;
@@ -330,19 +443,33 @@ private:
         }
     }
 
-    void finish() {
+    // What became of a held wheel tick. A tick dropped or turned round is a
+    // fault the guard removed.
+    void countWheelOutcome(uint8_t settled) {
+        const bool dropped = settled == static_cast<uint8_t>(Settled::WheelDropped);
+        const bool turned = settled == static_cast<uint8_t>(Settled::WheelFlipped);
+        if (dropped) ++counters_.reversalsDropped;
+        if (turned) ++counters_.ticksTurned;
+        if (settled == static_cast<uint8_t>(Settled::WheelConfirmed)) ++counters_.reversalsConfirmed;
+        if ((dropped || turned) && run_.active && run_.id != kTestClicks) ++run_.caught;
+    }
+
+    void finish(double now) {
         run_.active = false;
         testTick_ = -1;
+        if (log_) {
+            fprintf(log_, "# test %s end t_ms=%.3f good=%d wrong=%d caught=%d\n", testName(run_.id), now, run_.good,
+                    run_.wrong, run_.caught);
+        }
         if (run_.good == 0 && run_.wrong == 0) return;   // started and stopped with nothing in it: not a run
         char stamp[32];
-        const time_t now = time(nullptr);
+        const time_t wall = time(nullptr);
         tm local{};
-        localtime_s(&local, &now);
+        localtime_s(&local, &wall);
         strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &local);
         run_.finishedAt = stamp;
         runs_.push_back(run_);
-        if (runs_.size() > 40) runs_.erase(runs_.begin());
-        testTick_ = -1;
+        if (runs_.size() > kKeepRuns) runs_.erase(runs_.begin());
 
         const std::wstring path = dataDir_ + L"\\benchmarks.jsonl";
         FILE* f = nullptr;
@@ -357,30 +484,137 @@ private:
 
     // ---- disk -------------------------------------------------------------
 
-    void openLog() {
-        char day[16];
+    static const char* logHeader() {
+        return "seq,t_ms,kind,button,down,delta,source,blocked,verdict,settled,rule_gap_ms,phys_gap_ms,test,"
+               "sys_ms,lag_ms,flags,vetoed,stalled,device,device_how,judged";
+    }
+
+    static int today() {
         const time_t now = time(nullptr);
         tm local{};
         localtime_s(&local, &now);
-        strftime(day, sizeof(day), "%Y%m%d", &local);
+        return (local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday;
+    }
+
+    void openLog() {
+        logDay_ = today();
         wchar_t name[64];
-        swprintf_s(name, L"\\events-%hs.csv", day);
+        swprintf_s(name, L"\\events-%08d.csv", logDay_);
         const std::wstring path = dataDir_ + name;
-        const bool fresh = GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES;
+        bool fresh = GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES;
+        if (!fresh && !headerMatches(path)) {
+            // A recording from a build with other columns. Keep it under another
+            // name so the two layouts never share a file.
+            const time_t now = time(nullptr);
+            tm local{};
+            localtime_s(&local, &now);
+            wchar_t old[96];
+            swprintf_s(old, L"\\events-%08d-until-%02d%02d%02d.csv", logDay_, local.tm_hour, local.tm_min, local.tm_sec);
+            if (MoveFileW(path.c_str(), (dataDir_ + old).c_str())) fresh = true;
+        }
         // Opened so that other programs can read the recording while it grows.
         log_ = _wfsopen(path.c_str(), L"ab", _SH_DENYWR);
         if (!log_) return;
-        if (fresh) fputs("seq,t_ms,kind,button,down,delta,source,blocked,verdict,settled,rule_gap_ms,phys_gap_ms,test\n", log_);
-        char stamp[32];
-        strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &local);
-        fprintf(log_, "# started %s, t_ms counts from here\n", stamp);
+        if (fresh) fprintf(log_, "%s\n", logHeader());
+        fprintf(log_, "# started %s, t_ms counts from there\n", startedAt_.c_str());
+        if (!configLine_.empty()) fprintf(log_, "# config t_ms=0.000 %s\n", configLine_.c_str());
+        for (size_t i = 0; i < devices_.size(); ++i) {
+            fprintf(log_, "# device %zu vid=%04X pid=%04X name=%s path=%s\n", i + 1, devices_[i].vid, devices_[i].pid,
+                    devices_[i].name.c_str(), devices_[i].path.c_str());
+        }
+    }
+
+    static bool headerMatches(const std::wstring& path) {
+        FILE* f = _wfsopen(path.c_str(), L"rb", _SH_DENYNO);
+        if (!f) return false;
+        char line[512] = {};
+        const bool got = fgets(line, sizeof(line), f) != nullptr;
+        fclose(f);
+        if (!got) return false;
+        size_t n = strlen(line);
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+        return strcmp(line, logHeader()) == 0;
     }
 
     void writeLog(const Item& it) {
         if (!log_) return;
-        fprintf(log_, "%llu,%.3f,%d,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%s\n",
+        fprintf(log_, "%llu,%.3f,%d,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%s,%u,%d,%d,%d,%d,%d,%d,%d\n",
                 static_cast<unsigned long long>(it.seq), it.r.t, it.r.kind, it.r.button, it.r.down, it.r.delta,
-                it.r.source, it.r.blocked, it.r.verdict, it.r.settled, it.r.gap, it.gap, testName(it.test));
+                it.r.source, it.r.blocked, it.r.verdict, it.r.settled, it.r.gap, it.gap, testName(it.test),
+                it.r.sys, it.r.lag, it.r.flags, it.r.vetoed, it.r.stalled, it.r.device, it.r.deviceHow, it.r.judged);
+    }
+
+    // Finished runs are kept in benchmarks.jsonl, one per line, in the shape
+    // testJson writes. Read the latest ones back so the page still shows them
+    // after a restart.
+    void loadRuns() {
+        const std::wstring path = dataDir_ + L"\\benchmarks.jsonl";
+        FILE* f = _wfsopen(path.c_str(), L"rb", _SH_DENYNO);
+        if (!f) return;
+        std::string line;
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), f)) {
+            line += buf;
+            if (line.empty() || line.back() != '\n') continue;      // a long line: keep reading it
+            TestRun t;
+            if (parseRun(line, &t)) {
+                runs_.push_back(t);
+                if (runs_.size() > kKeepRuns) runs_.erase(runs_.begin());
+            }
+            line.clear();
+        }
+        fclose(f);
+    }
+
+    static const char* valueOf(const std::string& line, const char* key) {
+        const std::string needle = std::string("\"") + key + "\":";
+        const size_t p = line.find(needle);
+        return p == std::string::npos ? nullptr : line.c_str() + p + needle.size();
+    }
+    static double numberOf(const std::string& line, const char* key) {
+        const char* v = valueOf(line, key);
+        return v ? strtod(v, nullptr) : 0;
+    }
+    static std::string textOf(const std::string& line, const char* key) {
+        const char* v = valueOf(line, key);
+        if (!v || *v != '"') return "";
+        const char* end = strchr(v + 1, '"');
+        return end ? std::string(v + 1, end) : "";
+    }
+    template <typename Fn>
+    static void eachOf(const std::string& line, const char* key, Fn fn) {
+        const char* v = valueOf(line, key);
+        if (!v || *v != '[') return;
+        ++v;
+        while (*v && *v != ']') {
+            char* end = nullptr;
+            const double d = strtod(v, &end);
+            if (end == v) break;
+            fn(d);
+            v = end;
+            if (*v == ',') ++v;
+        }
+    }
+    static bool parseRun(const std::string& line, TestRun* t) {
+        const std::string name = textOf(line, "name");
+        for (int i = 1; i < kTestCount; ++i) if (name == testName(i)) t->id = i;
+        if (t->id == kNoTest) return false;
+        const char* guarded = valueOf(line, "guarded");
+        t->guarded = guarded && strncmp(guarded, "true", 4) == 0;
+        t->target = static_cast<int>(numberOf(line, "target"));
+        t->good = static_cast<int>(numberOf(line, "good"));
+        t->wrong = static_cast<int>(numberOf(line, "wrong"));
+        t->fast = static_cast<int>(numberOf(line, "fast"));
+        t->caught = static_cast<int>(numberOf(line, "caught"));
+        t->startedT = 0;
+        t->lastT = numberOf(line, "seconds") * 1000.0;
+        int i = 0;
+        eachOf(line, "goodBy", [&](double d) { if (i < kButtons) t->goodBy[i++] = static_cast<int>(d); });
+        i = 0;
+        eachOf(line, "wrongBy", [&](double d) { if (i < kButtons) t->wrongBy[i++] = static_cast<int>(d); });
+        eachOf(line, "wrongGaps", [&](double d) { if (t->wrongGaps.size() < 500) t->wrongGaps.push_back(static_cast<float>(d)); });
+        t->finishedAt = textOf(line, "finishedAt");
+        return true;
     }
 
     // ---- json -------------------------------------------------------------
@@ -431,6 +665,7 @@ private:
         num(j, "target", t.target);
         num(j, "good", t.good);
         num(j, "wrong", t.wrong);
+        num(j, "fast", t.fast);
         num(j, "caught", t.caught);
         num(j, "seconds", ((t.active ? now : t.lastT) - t.startedT) / 1000.0, 1);
         arr(j, "goodBy", t.goodBy, kButtons);
@@ -449,9 +684,14 @@ private:
     std::mutex mu_;
     std::wstring dataDir_;
     FILE* log_ = nullptr;
+    int   logDay_ = 0;
+    unsigned pollCount_ = 0;
+    std::string startedAt_;      // wall clock when recording began: t_ms 0
+    std::string configLine_;     // the thresholds in force, as written into the recording
 
     uint64_t seq_ = 0;
     std::deque<Item> events_;
+    std::vector<DeviceRow> devices_;
     Counters counters_;
     Hist pressGap_[3];        // left, right, every other button
     Hist holdLen_;

@@ -57,6 +57,7 @@
   .field input[type=checkbox], .guard input { width:16px; height:16px; accent-color:var(--accent); }
   .guard { display:flex; align-items:center; gap:8px; font:600 13px system-ui; color:var(--dim); cursor:pointer; }
   .guard.on { color:var(--text); }
+  #mouse { padding:6px 8px; font-size:13px; max-width:260px; }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--red); box-shadow:0 0 8px var(--red); }
   #pad { height:230px; display:flex; align-items:center; justify-content:center; color:var(--dim);
          border:1px dashed var(--line); border-radius:10px; user-select:none; outline:none; }
@@ -77,10 +78,11 @@
 <header>
   <h1>fly-by-<span>wire</span></h1>
   <label class="guard" id="guardLabel"><input type="checkbox" id="guard">Guard</label>
+  <select id="mouse" title="The mouse the guard and the tests apply to"></select>
   <span class="dot hidden" id="offline" title="fly-by-wire is not answering"></span>
   <nav id="topnav">
     <button class="tab-btn on" data-tab="tests">Tests</button>
-    <button class="tab-btn" data-tab="guard">Guard</button>
+    <button class="tab-btn" data-tab="guard">Rules</button>
     <button class="tab-btn" data-tab="events">Events</button>
   </nav>
 </header>
@@ -89,10 +91,11 @@
   <section id="tab-tests" class="stack">
     <div class="grid3">
       <div class="card" data-test="clicks" data-target="100">
-        <h2>Single clicks</h2>
-        <div class="muted">Left button, one click at a time, about one a second.</div>
+        <h2>Clicks</h2>
+        <div class="muted">Click as you normally do. Double clicks by hand are fine.</div>
         <div class="big"><span class="good-n">0</span> <small>/ 100</small></div>
-        <div class="stat"><span>Extra presses</span><b class="wrong-n">0</b></div>
+        <div class="stat"><span>Bugged double clicks, under 50 ms</span><b class="wrong-n">0</b></div>
+        <div class="stat"><span>Double clicks by hand</span><b class="fast-n">0</b></div>
         <div class="stat"><span>Dropped by guard</span><b class="caught-n">0</b></div>
         <div class="row end"><button class="primary start">Start</button><button class="ghost stop hidden">Stop</button></div>
       </div>
@@ -101,7 +104,7 @@
         <div class="muted">Wheel up only, notch by notch.</div>
         <div class="big"><span class="good-n">0</span> <small>/ 200</small></div>
         <div class="stat"><span>Ticks down</span><b class="wrong-n">0</b></div>
-        <div class="stat"><span>Dropped by guard</span><b class="caught-n">0</b></div>
+        <div class="stat"><span>Fixed by guard</span><b class="caught-n">0</b></div>
         <div class="row end"><button class="primary start">Start</button><button class="ghost stop hidden">Stop</button></div>
       </div>
       <div class="card" data-test="down" data-target="200">
@@ -109,7 +112,7 @@
         <div class="muted">Wheel down only, notch by notch.</div>
         <div class="big"><span class="good-n">0</span> <small>/ 200</small></div>
         <div class="stat"><span>Ticks up</span><b class="wrong-n">0</b></div>
-        <div class="stat"><span>Dropped by guard</span><b class="caught-n">0</b></div>
+        <div class="stat"><span>Fixed by guard</span><b class="caught-n">0</b></div>
         <div class="row end"><button class="primary start">Start</button><button class="ghost stop hidden">Stop</button></div>
       </div>
     </div>
@@ -117,7 +120,7 @@
     <div class="card">
       <h2>Runs</h2>
       <table>
-        <thead><tr><th>Finished</th><th>Test</th><th>Guard</th><th>Counted</th><th>Wrong</th><th>Dropped by guard</th><th>Gap before each wrong one, ms</th></tr></thead>
+        <thead><tr><th>Finished</th><th>Test</th><th>Guard</th><th>Counted</th><th>Wrong</th><th>Fixed by guard</th><th>Gap before each wrong one, ms</th></tr></thead>
         <tbody id="runs"></tbody>
       </table>
     </div>
@@ -128,25 +131,32 @@
       <div class="card">
         <h2>Clicks</h2>
         <div class="field"><span>Drop a press that follows a release too soon</span><input type="checkbox" data-key="clickGuard"></div>
-        <div class="field"><span>Left, ms</span><input type="number" min="0" max="150" step="1" data-key="bounceLeft"></div>
-        <div class="field"><span>Right, ms</span><input type="number" min="0" max="150" step="1" data-key="bounceRight"></div>
-        <div class="field"><span>Middle, ms</span><input type="number" min="0" max="150" step="1" data-key="bounceMiddle"></div>
-        <div class="field"><span>Side buttons, ms</span><input type="number" min="0" max="150" step="1" data-key="bounceSide"></div>
-        <div class="field"><span>Bridge a brief opening during a hold</span><input type="checkbox" data-key="holdGuard"></div>
-        <div class="field"><span>Release delay, ms</span><input type="number" min="1" max="60" step="1" data-key="holdMs"></div>
+        <div class="field"><span>Left, ms</span><input type="number" min="0" max="80" step="1" data-key="bounceLeft"></div>
+        <div class="field"><span>Right, ms</span><input type="number" min="0" max="80" step="1" data-key="bounceRight"></div>
+        <div class="field"><span>Middle, ms</span><input type="number" min="0" max="80" step="1" data-key="bounceMiddle"></div>
+        <div class="field"><span>Side buttons, ms</span><input type="number" min="0" max="80" step="1" data-key="bounceSide"></div>
+        <h2 style="margin-top:18px">Release delay</h2>
+        <div class="muted" style="margin-bottom:6px">Bridges a brief opening during a hold. 0 is off.</div>
+        <div class="field"><span>Left, ms</span><input type="number" min="0" max="50" step="1" data-key="holdLeft"></div>
+        <div class="field"><span>Right, ms</span><input type="number" min="0" max="50" step="1" data-key="holdRight"></div>
+        <div class="muted hidden" id="hotkey" style="margin-top:14px">Ctrl+Alt+Shift+F11 switches the guard off.</div>
       </div>
       <div class="card">
         <h2>Wheel</h2>
-        <div class="field"><span>Hold back a tick against the scroll direction</span><input type="checkbox" data-key="wheelGuard"></div>
+        <div class="field"><span>Catch ticks that go the wrong way</span><input type="checkbox" data-key="wheelGuard"></div>
+        <div class="field"><span>Turn them round (off: drop them)</span><input type="checkbox" data-key="wheelFlip"></div>
         <div class="field"><span>Reversal window, ms</span><input type="number" min="0" max="600" step="5" data-key="reverseMs"></div>
-        <div class="field"><span>Confirm window, ms</span><input type="number" min="20" max="1000" step="5" data-key="confirmMs"></div>
+        <div class="field"><span>Confirm window, ms</span><input type="number" min="20" max="500" step="5" data-key="confirmMs"></div>
+        <div class="field"><span>First tick wait, ms (0 is off)</span><input type="number" min="0" max="150" step="5" data-key="firstMs"></div>
         <h2 style="margin-top:18px">Counts</h2>
         <div class="stat"><span>Presses, left / right / other</span><b id="c-presses">0</b></div>
         <div class="stat"><span>Re-presses dropped</span><b id="c-bounces">0</b></div>
         <div class="stat"><span>Openings bridged</span><b id="c-bridged">0</b></div>
         <div class="stat"><span>Wheel ticks</span><b id="c-ticks">0</b></div>
-        <div class="stat"><span>Reversed ticks dropped</span><b id="c-revdrop">0</b></div>
-        <div class="stat"><span>Reversals confirmed</span><b id="c-revok">0</b></div>
+        <div class="stat"><span>Ticks turned round</span><b id="c-turned">0</b></div>
+        <div class="stat"><span>Ticks dropped</span><b id="c-revdrop">0</b></div>
+        <div class="stat"><span>Real turns let through</span><b id="c-revok">0</b></div>
+        <div class="stat"><span>Events from other mice</span><b id="c-mice">0</b></div>
         <div class="stat"><span>Events from other programs</span><b id="c-other">0</b></div>
         <div class="row end"><button class="ghost" id="reset">Clear counts</button></div>
       </div>
@@ -168,10 +178,10 @@
 
   <section id="tab-events" class="hidden">
     <div class="card">
-      <div class="legend"><span class="chip dropped">dropped</span><span class="chip held">held back</span><span class="chip sent">sent by guard</span><span class="chip">other program</span></div>
+      <div class="legend"><span class="chip dropped">dropped</span><span class="chip held">held back</span><span class="chip sent">sent by guard</span><span class="chip">other mouse or program</span></div>
       <div class="scroll">
         <table>
-          <thead><tr><th>#</th><th>Time, s</th><th>Event</th><th>Gap, ms</th></tr></thead>
+          <thead><tr><th>#</th><th>Time, s</th><th>Event</th><th>Gap, ms</th><th>Mouse</th></tr></thead>
           <tbody id="events"></tbody>
         </table>
       </div>
@@ -184,12 +194,22 @@
   'use strict';
   var HEADERS = { 'Content-Type': 'application/json', 'X-Fly-By-Wire': '1' };
   var BUTTONS = ['Left', 'Right', 'Middle', 'Side 1', 'Side 2'];
-  var TEST_LABEL = { clicks: 'Single clicks', up: 'Scroll up', down: 'Scroll down' };
+  var TEST_LABEL = { clicks: 'Clicks', up: 'Scroll up', down: 'Scroll down' };
+  var BUILD = '__FBW_BUILD__';   // filled in by the program when it serves the page
   var seq = 0, state = null, rows = [];
 
   function $(id) { return document.getElementById(id); }
   function post(path, body) {
     return fetch(path, { method: 'POST', headers: HEADERS, body: JSON.stringify(body || {}) }).catch(function () {});
+  }
+
+  // This page is used with a mouse that clicks twice by itself. A second
+  // activation of the same control within 400 ms is that fault, not a decision.
+  function meant(el) {
+    var now = performance.now();
+    if (el.fbwAt && now - el.fbwAt < 400) return false;
+    el.fbwAt = now;
+    return true;
   }
 
   // tabs
@@ -202,24 +222,32 @@
   });
 
   // guard switch and settings
-  $('guard').addEventListener('change', function () { post('/api/config', { enabled: this.checked }); });
+  $('guard').addEventListener('change', function () {
+    if (!meant(this)) { this.checked = !this.checked; return; }   // undo the bounce, keep the first click
+    post('/api/config', { enabled: this.checked });
+  });
   document.querySelectorAll('[data-key]').forEach(function (el) {
     el.addEventListener('change', function () {
+      if (el.type === 'checkbox' && !meant(el)) { el.checked = !el.checked; return; }
       var body = {};
       body[el.dataset.key] = el.type === 'checkbox' ? el.checked : Number(el.value);
       post('/api/config', body);
     });
   });
-  $('reset').addEventListener('click', function () { post('/api/reset'); });
+  $('reset').addEventListener('click', function () { if (meant(this)) post('/api/reset'); });
+  $('mouse').addEventListener('change', function () { post('/api/config', { mouse: this.value }); });
   $('histButton').addEventListener('change', function () { if (state) draw(); });
 
   // tests
   document.querySelectorAll('[data-test]').forEach(function (card) {
     card.querySelector('.start').addEventListener('click', function () {
+      if (!meant(this)) return;
       post('/api/test', { action: 'start', test: card.dataset.test, target: Number(card.dataset.target) });
       $('pad').focus();
     });
-    card.querySelector('.stop').addEventListener('click', function () { post('/api/test', { action: 'stop' }); });
+    card.querySelector('.stop').addEventListener('click', function () {
+      if (meant(this)) post('/api/test', { action: 'stop' });
+    });
   });
 
   // the pad swallows what the test produces so the page does not scroll or open menus
@@ -241,6 +269,8 @@
       var name = card.dataset.test;
       var t = live === name ? state.test : lastRun(name);
       var good = t ? t.good : 0, wrong = t ? t.wrong : 0, caught = t ? t.caught : 0;
+      var fast = card.querySelector('.fast-n');
+      if (fast) fast.textContent = t ? (t.fast || 0) : 0;
       card.querySelector('.good-n').textContent = good;
       var w = card.querySelector('.wrong-n');
       w.textContent = wrong;
@@ -260,9 +290,44 @@
     $('runs').innerHTML = html;
   }
 
+  // The mouse picker: every mouse seen so far, plus the one that is set even
+  // if it has not sent anything yet. Rebuilt only when that list changes, so an
+  // open list is not pulled away under the pointer.
+  var mouseList = '';
+  function drawMouse() {
+    var options = [['', 'Every mouse']], seen = {};
+    (state.devices || []).forEach(function (d) {
+      if (seen[d.id] || d.id === '0000:0000') return;
+      seen[d.id] = true;
+      options.push([d.id, d.name || d.id]);
+    });
+    if (state.mouse && !seen[state.mouse]) options.push([state.mouse, state.mouse === '1038:170E' ? 'SteelSeries Rival 500' : state.mouse]);
+    var key = JSON.stringify(options);
+    var sel = $('mouse');
+    if (key !== mouseList) {
+      mouseList = key;
+      sel.textContent = '';
+      options.forEach(function (o) {
+        var opt = document.createElement('option');
+        opt.value = o[0];
+        opt.textContent = o[1];
+        sel.appendChild(opt);
+      });
+    }
+    if (document.activeElement !== sel) sel.value = state.mouse || '';
+    sel.disabled = !state.rawInput;
+  }
+
+  function deviceName(n) {
+    var d = (state.devices || [])[n - 1];
+    return d ? (d.name || d.id) : '';
+  }
+
   function drawSettings() {
     $('guard').checked = state.enabled;
     $('guardLabel').classList.toggle('on', state.enabled);
+    $('hotkey').classList.toggle('hidden', !state.hotkey);
+    drawMouse();
     document.querySelectorAll('[data-key]').forEach(function (el) {
       var v = state.config[el.dataset.key];
       if (el.type === 'checkbox') el.checked = !!v;
@@ -273,8 +338,10 @@
     $('c-bounces').textContent = c.bounces.reduce(function (a, b) { return a + b; }, 0);
     $('c-bridged').textContent = c.bridged;
     $('c-ticks').textContent = c.ticks;
+    $('c-turned').textContent = c.ticksTurned;
     $('c-revdrop').textContent = c.reversalsDropped;
     $('c-revok').textContent = c.reversalsConfirmed;
+    $('c-mice').textContent = c.otherMice;
     $('c-other').textContent = c.otherPrograms;
   }
 
@@ -334,16 +401,20 @@
     if (e.k === 0) return BUTTONS[e.b] + (e.d ? ' down' : ' up');
     if (e.k === 1) return 'Wheel ' + (e.w > 0 ? 'up' : 'down') + (Math.abs(e.w) === 120 ? '' : ' ' + e.w);
     if (e.k === 2) return 'Wheel sideways';
-    return e.st === 1 ? BUTTONS[e.b] + ' up, sent late' : e.st === 4 ? 'Held tick dropped' : 'Settled';
+    return e.st === 1 ? BUTTONS[e.b] + ' up, sent late' : e.st === 4 ? 'Held tick dropped' : e.st === 5 ? 'Held tick turned round'
+         : e.st === 6 ? 'First tick sent as it came' : 'Settled';
   }
 
-  // Red: never reached applications. Amber: held back, not decided yet.
-  // Violet: sent by the guard itself. No colour: passed.
+  function isHeldTick(e) { return e.x && (e.v === 5 || e.v === 7); }
+
+  // Red: never reached applications as the mouse sent it. Amber: held back,
+  // not decided yet. Violet: sent by the guard itself. Dim: another mouse or
+  // another program, not judged. No colour: passed.
   function eventClass(e) {
-    if (e.src === 1) return 'other';
+    if (e.src === 1 || (e.src === 0 && e.k !== 3 && !e.j)) return 'other';
     if (e.src === 2) return 'sent';
-    if (e.x && (e.v === 3 || e.v === 5)) {
-      if (e.fate === 2 || e.fate === 4) return 'dropped';
+    if (e.x && (e.v === 3 || isHeldTick(e))) {
+      if (e.fate === 2 || e.fate === 4 || e.fate === 5) return 'dropped';
       return e.fate ? '' : 'held';
     }
     if (e.x || (e.k === 3 && e.st === 4)) return 'dropped';
@@ -351,14 +422,22 @@
   }
 
   // A held event learns its fate from a later record. Write it back onto the
-  // held row so its colour stops saying "not decided".
+  // held row so its colour stops saying "not decided". A wheel tick that
+  // settles two held ticks at once (the first two of a stroke disagreed) marks
+  // the one that goes its own way as delivered and the other as the misread.
   function settle(list) {
     for (var i = 0; i < list.length; i++) {
-      var st = list[i].st;
-      if (!st) continue;
-      var wantVerdict = st === 3 || st === 4 ? 5 : 3;
+      var s = list[i], st = s.st;
+      if (!st || s.settledDone) continue;
+      s.settledDone = true;
+      var wheel = st >= 3, decider = wheel && s.k === 1 ? s : null;
       for (var j = i - 1; j >= 0 && j >= i - 40; j--) {
-        if (list[j].x && list[j].v === wantVerdict && !list[j].fate) { list[j].fate = st; break; }
+        var h = list[j];
+        if (!h.x || h.fate || s.t - h.t > 1000) continue;
+        if (wheel ? !isHeldTick(h) : h.v !== 3) continue;
+        if (decider && (st === 4 || st === 5)) h.fate = (h.w > 0) === (decider.w > 0) ? 3 : st;
+        else h.fate = st;
+        if (!decider) break;      // a timer settles one held event at a time
       }
     }
   }
@@ -368,7 +447,8 @@
     for (var i = rows.length - 1; i >= 0 && i >= rows.length - 300; i--) {
       var e = rows[i];
       html += '<tr class="' + eventClass(e) + '"><td>' + e.s + '</td><td>' + (e.t / 1000).toFixed(3) + '</td><td>' +
-              eventText(e) + '</td><td>' + (e.g >= 0 ? e.g.toFixed(1) : '') + '</td></tr>';
+              eventText(e) + '</td><td>' + (e.g >= 0 ? e.g.toFixed(1) : '') + '</td><td>' +
+              (e.src === 1 ? 'another program' : e.src === 2 ? 'guard' : e.dev ? deviceName(e.dev) : '') + '</td></tr>';
     }
     $('events').innerHTML = html;
   }
@@ -383,6 +463,8 @@
   function poll() {
     fetch('/api/state?since=' + seq).then(function (r) { return r.json(); }).then(function (s) {
       $('offline').classList.add('hidden');
+      // The program was replaced by a newer build: this page belongs to the old one.
+      if (s.build && BUILD.indexOf('FBW_BUILD') < 0 && s.build !== BUILD) { location.reload(); return; }
       if (s.seq < seq) rows = [];            // the program was restarted
       rows = rows.concat(s.events);
       if (rows.length > 600) rows = rows.slice(rows.length - 600);

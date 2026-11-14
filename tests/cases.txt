@@ -1,11 +1,18 @@
 # Filter cases. One case is four lines:
 #   case:   name
-#   config: click=0|1  bounce=ms (all buttons)  bounceL/R/M/X1/X2=ms  hold=ms (0 is off)
-#           wheel=0|1  reverse=ms  confirm=ms
+#   config: click=0|1  bounce=ms (all buttons)  bounceL/R/M/X1/X2=ms
+#           hold=ms (all buttons, 0 is off)  holdL/R/M/X1/X2=ms
+#           wheel=0|1  reverse=ms  confirm=ms  first=ms (0 is off)  flip=0|1
+#           (first and flip are off unless a case names them)
 #   in:     what the mouse sent       "<ms> <L|R|M|X1|X2> <down|up>"  or  "<ms> wheel <+N|-N>"
 #   out:    what applications get     same notation, with the time each event is delivered
 # An event the filter sends itself is listed at the time it is sent. When it is
-# sent because of an incoming event, it comes right after that event.
+# sent because of an incoming event, it comes right after that event. Two wheel
+# ticks delivered at the same instant are compared as a pair, in either order.
+# Also allowed in "in":
+#   "<ms> ... inj"         the event was injected by another program: never judged
+#   "<ms> hwheel <+N|-N>"  the sideways wheel: never judged
+#   "<ms> off" / "<ms> on" the guard is switched off or back on
 
 # ---------- C1: re-press guard ----------
 case:   plain click passes
@@ -234,3 +241,572 @@ case:   clicks do not disturb the wheel guard
 config: click=1 bounce=40 hold=0 wheel=1 reverse=150 confirm=200
 in:     0 wheel +120, 10 L down, 30 wheel -120, 50 L up, 60 wheel +120
 out:    0 wheel +120, 10 L down, 50 L up, 60 wheel +120
+
+# ---------- design panel vectors ----------
+# The filter designer's cases, checked against an independent model of the
+# written rules. Ids are theirs. Left out: W1-22 (no block-only wheel mode).
+# Their ten W2 cases come further down.
+# "inj" marks an event another program injected, "off" and "on" switch the guard.
+case:   C1-01 clean single click
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 80 L up
+out:    0 L down, 80 L up
+
+case:   C1-02 release bounce is removed
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 100 L up, 104 L down, 107 L up
+out:    0 L down, 100 L up
+
+case:   C1-03 chatter train re-arms the quiet time
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 100 L up, 104 L down, 106 L up, 121 L down, 123 L up, 140 L down, 142 L up
+out:    0 L down, 100 L up
+
+case:   C1-04 gap exactly at threshold passes
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 60 L up, 90 L down, 150 L up
+out:    0 L down, 60 L up, 90 L down, 150 L up
+
+case:   C1-05 gap one below threshold is blocked
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 60 L up, 89 L down, 150 L up
+out:    0 L down, 60 L up
+
+case:   C1-06 fast deliberate double click
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 55 L up, 100 L down, 155 L up
+out:    0 L down, 55 L up, 100 L down, 155 L up
+
+case:   C1-07 very fast clicking 12.5 per second
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 40 L up, 80 L down, 120 L up, 160 L down, 200 L up
+out:    0 L down, 40 L up, 80 L down, 120 L up, 160 L down, 200 L up
+
+case:   C1-08 same clicking with threshold set too high
+config: click=1 bounce=50 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 40 L up, 80 L down, 120 L up, 160 L down, 200 L up
+out:    0 L down, 40 L up
+
+case:   C1-09 triple click
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 60 L up, 130 L down, 190 L up, 260 L down, 320 L up
+out:    0 L down, 60 L up, 130 L down, 190 L up, 260 L down, 320 L up
+
+case:   C1-10 drag
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 800 L up
+out:    0 L down, 800 L up
+
+case:   C1-11 double click then drag
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 60 L up, 130 L down, 900 L up
+out:    0 L down, 60 L up, 130 L down, 900 L up
+
+case:   C1-12 two buttons pressed together
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 5 R down, 60 L up, 66 R up
+out:    0 L down, 5 R down, 60 L up, 66 R up
+
+case:   C1-13 left chatters while right is held
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 R down, 100 L down, 160 L up, 163 L down, 166 L up, 300 L down, 360 L up, 1000 R up
+out:    0 R down, 100 L down, 160 L up, 300 L down, 360 L up, 1000 R up
+
+case:   C1-14 right press 5 ms after left release
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 50 L up, 55 R down, 100 R up
+out:    0 L down, 50 L up, 55 R down, 100 R up
+
+case:   C1-15 hold interrupted, C1 alone
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 500 L up, 503 L down, 2000 L up
+out:    0 L down, 500 L up
+
+case:   C1-16 press bounce, C1 alone
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 2 L up, 4 L down, 100 L up
+out:    0 L down, 2 L up
+
+case:   C1-17 injected clicks bypass the filter
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 50 L up, 55 L down inj, 60 L up inj, 200 L down, 260 L up
+out:    0 L down, 50 L up, 55 L down, 60 L up, 200 L down, 260 L up
+
+case:   C1-18 injected release does not re-arm C1
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 50 L up, 100 L down inj, 110 L up inj, 120 L down, 180 L up
+out:    0 L down, 50 L up, 100 L down, 110 L up, 120 L down, 180 L up
+
+case:   C1-19 release with no press seen
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L up, 200 L down, 260 L up
+out:    0 L up, 200 L down, 260 L up
+
+case:   C1-20 press twice with no release seen
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 500 L down, 560 L up
+out:    0 L down, 500 L down, 560 L up
+
+case:   C1-21 what a wrongly blocked press costs
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 60 L up, 80 L down, 700 L up, 900 L down, 960 L up
+out:    0 L down, 60 L up, 900 L down, 960 L up
+
+case:   C1-22 right button chatter
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 R down, 90 R up, 96 R down, 99 R up
+out:    0 R down, 90 R up
+
+case:   C1-23 side button chatter
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 X1 down, 70 X1 up, 75 X1 down, 78 X1 up
+out:    0 X1 down, 70 X1 up
+
+case:   C1-24 rule off for one button
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 bounceM=0
+in:     0 M down, 50 M up, 55 M down, 60 M up
+out:    0 M down, 50 M up, 55 M down, 60 M up
+
+case:   C1-25 switched off while a blocked press is held
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 60 L up, 80 L down, 100 off, 300 L up
+out:    0 L down, 60 L up, 300 L up
+
+case:   C1-26 comparison uses full resolution time
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 60.5 L up, 90.4 L down, 150 L up, 400 L down, 460.2 L up, 490.2 L down, 550 L up
+out:    0 L down, 60.5 L up, 400 L down, 460.2 L up, 490.2 L down, 550 L up
+
+# the reference model forgets everything when the guard is switched off and on.
+# This build keeps measuring while the guard is off, so a re-press 6 ms after a
+# release is still caught when the guard came back on in between.
+case:   C1-27 a re-press is still caught when the guard came back on just before it
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 L down, 50 L up, 52 off, 54 on, 56 L down, 100 L up
+out:    0 L down, 50 L up
+
+case:   C2-01 clean click, release delivered late
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 80 L up
+out:    0 L down, 92 L up
+
+case:   C2-02 hold interruption is bridged
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 500 L up, 503 L down, 2000 L up
+out:    0 L down, 2012 L up
+
+case:   C2-03 press bounce is bridged
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 2 L up, 4 L down, 100 L up
+out:    0 L down, 112 L up
+
+case:   C2-04 release bounce with C2
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 104 L down, 107 L up
+out:    0 L down, 119 L up
+
+case:   C2-05 gap between c2 and c1
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 120 L down, 124 L up
+out:    0 L down, 112 L up
+
+case:   C2-06 gap exactly c2, C1 on
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 112 L down, 200 L up
+out:    0 L down, 112 L up
+
+case:   C2-07 gap exactly c2, C1 off
+config: click=1 bounce=0 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 112 L down, 200 L up
+out:    0 L down, 112 L up, 112 L down, 212 L up
+
+case:   C2-08 gap one below c2 is bridged
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 111 L down, 200 L up
+out:    0 L down, 212 L up
+
+case:   C2-09 deliberate double click with C2
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 60 L up, 130 L down, 190 L up
+out:    0 L down, 72 L up, 130 L down, 202 L up
+
+case:   C2-10 other button during a pending release
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 105 R down, 160 R up
+out:    0 L down, 105 R down, 112 L up, 160 R up
+
+case:   C2-11 filter switched off during a pending release
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 105 off
+out:    0 L down, 105 L up
+
+case:   C2-12 several openings in one hold
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 300 L up, 302 L down, 600 L up, 605 L down, 900 L up
+out:    0 L down, 912 L up
+
+case:   C2-13 stray release is not delayed
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L up, 200 L down, 260 L up
+out:    0 L up, 200 L down, 272 L up
+
+case:   C2-14 C1 block after a C2 release, then a normal click
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 125 L down, 400 L up, 500 L down, 560 L up
+out:    0 L down, 112 L up, 500 L down, 572 L up
+
+case:   C2-15 C2 on both buttons, chord
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 hold=12
+in:     0 L down, 5 R down, 60 L up, 66 R up
+out:    0 L down, 5 R down, 72 L up, 78 R up
+
+case:   C2-16 second release while one is pending
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 105 L up
+out:    0 L down, 112 L up
+
+case:   C2-17 C1 is measured from the hardware release
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 100 L up, 135 L down, 200 L up
+out:    0 L down, 112 L up, 135 L down, 212 L up
+
+case:   C2-18 double click then drag with C2
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 holdL=12
+in:     0 L down, 60 L up, 130 L down, 900 L up
+out:    0 L down, 72 L up, 130 L down, 912 L up
+
+case:   C2-19 left chatters while right is held, C2 on both
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 hold=12
+in:     0 R down, 100 L down, 160 L up, 163 L down, 166 L up, 300 L down, 360 L up, 1000 R up
+out:    0 R down, 100 L down, 178 L up, 300 L down, 372 L up, 1012 R up
+
+case:   W1-01 plain scroll
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 80 wheel -120
+out:    0 wheel -120, 40 wheel -120, 80 wheel -120
+
+case:   W1-02 reversed tick in the middle of a scroll
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 70 wheel +120, 100 wheel -120, 140 wheel -120
+out:    0 wheel -120, 40 wheel -120, 100 wheel -120, 140 wheel -120
+
+case:   W1-03 reversed tick as the wheel settles
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 80 wheel -120, 130 wheel +120
+out:    0 wheel -120, 40 wheel -120, 80 wheel -120
+
+case:   W1-04 deliberate quick reversal
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 180 wheel +120, 215 wheel +120, 250 wheel +120
+out:    0 wheel -120, 40 wheel -120, 215 wheel +120, 215 wheel +120, 250 wheel +120
+
+case:   W1-05 reversal exactly at the guard window
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 240 wheel +120
+out:    0 wheel -120, 40 wheel -120, 240 wheel +120
+
+case:   W1-06 reversal 1 ms inside the guard window, alone
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 239 wheel +120
+out:    0 wheel -120, 40 wheel -120
+
+case:   W1-07 single notch back inside the guard window
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 150 wheel +120
+out:    0 wheel -120
+
+case:   W1-08 slow single notch steps
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 500 wheel -120, 1000 wheel -120, 1600 wheel +120, 2200 wheel +120
+out:    0 wheel -120, 500 wheel -120, 1000 wheel -120, 1600 wheel +120, 2200 wheel +120
+
+case:   W1-09 slow deliberate reversal
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 100 wheel +120, 300 wheel +120, 500 wheel +120
+out:    0 wheel -120, 300 wheel +120, 500 wheel +120
+
+case:   W1-10 confirmation 1 ms inside the window
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 100 wheel +120, 249 wheel +120
+out:    0 wheel -120, 249 wheel +120, 249 wheel +120
+
+case:   W1-11 confirmation exactly at the window
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 100 wheel +120, 250 wheel +120
+out:    0 wheel -120, 250 wheel +120
+
+case:   W1-12 settle glitch followed by a real reversal
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 80 wheel +120, 200 wheel +120, 240 wheel +120
+out:    0 wheel -120, 40 wheel -120, 200 wheel +120, 200 wheel +120, 240 wheel +120
+
+case:   W1-13 two reversed ticks in a row get through
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 70 wheel +120, 95 wheel +120, 130 wheel -120, 170 wheel -120
+out:    0 wheel -120, 40 wheel -120, 95 wheel +120, 95 wheel +120, 170 wheel -120, 170 wheel -120
+
+case:   W1-14 high resolution deltas
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -30, 10 wheel -30, 20 wheel +30, 30 wheel -30
+out:    0 wheel -30, 10 wheel -30, 30 wheel -30
+
+case:   W1-15 multi notch deltas
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -240, 30 wheel +120, 60 wheel -120
+out:    0 wheel -240, 60 wheel -120
+
+case:   W1-16 held tick keeps its own delta
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 50 wheel +240, 80 wheel +120
+out:    0 wheel -120, 80 wheel +240, 80 wheel +120
+
+case:   W1-17 rocking one notch back and forth
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel +120, 100 wheel -120, 200 wheel +120, 300 wheel -120, 400 wheel +120
+out:    0 wheel +120, 200 wheel +120, 400 wheel +120
+
+case:   W1-18 rule off
+config: click=1 bounce=30 hold=0 wheel=0 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel +120, 80 wheel -120
+out:    0 wheel -120, 40 wheel +120, 80 wheel -120
+
+case:   W1-19 horizontal wheel is not filtered
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 20 hwheel +120, 40 wheel +120, 60 wheel -120
+out:    0 wheel -120, 20 hwheel +120, 60 wheel -120
+
+case:   W1-20 injected wheel tick bypasses
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 30 wheel +120 inj, 60 wheel -120
+out:    0 wheel -120, 30 wheel +120, 60 wheel -120
+
+case:   W1-21 buttons and wheel do not interact
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 50 wheel +120, 60 L down, 90 wheel +120, 120 L up
+out:    0 wheel -120, 60 L down, 90 wheel +120, 90 wheel +120, 120 L up
+
+case:   W1-23 filter switched off while a tick is held
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 50 wheel +120, 60 off, 70 wheel +120
+out:    0 wheel -120, 70 wheel +120
+
+case:   W1-24 opposite ticks 250 ms apart
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel +120, 250 wheel -120, 500 wheel +120, 750 wheel -120
+out:    0 wheel +120, 250 wheel -120, 500 wheel +120, 750 wheel -120
+
+case:   W1-25 wrong first tick with W2 off
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel +120, 30 wheel -120, 60 wheel -120, 90 wheel -120
+out:    0 wheel +120, 60 wheel -120, 60 wheel -120, 90 wheel -120
+
+case:   W1-26 reversed tick after a short pause
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 40 wheel -120, 140 wheel +120, 170 wheel -120, 200 wheel -120
+out:    0 wheel -120, 40 wheel -120, 170 wheel -120, 200 wheel -120
+
+case:   W1-27 direction follows a confirmed reversal
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 100 wheel +120, 140 wheel +120, 180 wheel -120, 220 wheel +120
+out:    0 wheel -120, 140 wheel +120, 140 wheel +120, 220 wheel +120
+
+case:   W1-28 an expired held tick clears the direction
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 10 wheel +120, 170 wheel +120
+out:    0 wheel -120, 170 wheel +120
+
+case:   W1-29 slow reversal with a longer guard window
+config: click=1 bounce=30 hold=0 wheel=1 reverse=400 confirm=150
+in:     0 wheel -120, 100 wheel +120, 300 wheel +120, 500 wheel +120
+out:    0 wheel -120, 300 wheel +120, 500 wheel +120
+
+# ---------- red team cases ----------
+case:   E1 a duplicated press after a bridge passes
+config: click=1 bounce=30 hold=0 holdL=12 wheel=0
+in:     0 L down, 100 L up, 104 L down, 110 L down, 400 L up
+out:    0 L down, 110 L down, 412 L up
+
+case:   E5 known limit of C1 alone: a press bounce followed by a drag loses the drag
+config: click=1 bounce=30 hold=0 wheel=0
+in:     0 L down, 3 L up, 7 L down, 600 L up
+out:    0 L down, 3 L up
+
+case:   E5 with the hold on that button the drag survives
+config: click=1 bounce=30 hold=0 holdL=12 wheel=0
+in:     0 L down, 3 L up, 7 L down, 600 L up
+out:    0 L down, 612 L up
+
+case:   E3 known limit of W1: alternating ticks come out one way
+config: click=0 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel +120, 100 wheel -120, 200 wheel +120, 300 wheel -120, 400 wheel +120
+out:    0 wheel +120, 200 wheel +120, 400 wheel +120
+
+case:   after an unconfirmed tick the next reversed tick is not held a second time
+config: click=0 hold=0 wheel=1 reverse=200 confirm=150
+in:     0 wheel -120, 10 wheel +120, 170 wheel +120, 180 wheel +120
+out:    0 wheel -120, 170 wheel +120, 180 wheel +120
+
+case:   a press hidden when the guard goes off: its release passes alone
+config: click=1 bounce=30 hold=0 wheel=0
+in:     0 L down, 60 L up, 80 L down, 100 off, 300 L up, 500 L down, 560 L up
+out:    0 L down, 60 L up, 300 L up, 500 L down, 560 L up
+
+case:   while the guard is off nothing is dropped
+config: click=1 bounce=30 hold=0 holdL=12 wheel=1 reverse=200 confirm=150
+in:     0 off, 10 L down, 60 L up, 65 L down, 70 L up, 100 wheel +120, 130 wheel -120, 160 wheel +120
+out:    10 L down, 60 L up, 65 L down, 70 L up, 100 wheel +120, 130 wheel -120, 160 wheel +120
+
+case:   switched back on, the rules apply again
+config: click=1 bounce=30 hold=0 wheel=0
+in:     0 off, 10 L down, 60 L up, 65 L down, 70 L up, 200 on, 300 L down, 360 L up, 365 L down, 370 L up
+out:    10 L down, 60 L up, 65 L down, 70 L up, 300 L down, 360 L up
+
+# ---------- design panel vectors: first tick of a stroke ----------
+# Their W2, with the misread tick dropped (flip=0) as in their model.
+# W2-01 and W2-06 differ from the reference model on purpose. There the second
+# tick judges the first. On the recorded mouse the wrong one of two disagreeing
+# first ticks was the second 4 times in 15, so here both wait for a third.
+case:   W2-01 wrong first tick: the second tick waits too and the third decides
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel +120, 30 wheel -120, 60 wheel -120, 90 wheel -120
+out:    60 wheel -120, 60 wheel -120, 90 wheel -120
+
+case:   W2-02 normal gesture with W2
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel -120, 30 wheel -120, 60 wheel -120
+out:    30 wheel -120, 30 wheel -120, 60 wheel -120
+
+case:   W2-03 lone notch with W2
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel -120
+out:    100 wheel -120
+
+case:   W2-04 second tick exactly at the W2 window
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel -120, 100 wheel -120
+out:    100 wheel -120, 100 wheel -120
+
+case:   W2-05 slow single steps with W2
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel -120, 500 wheel -120
+out:    100 wheel -120, 600 wheel -120
+
+case:   W2-06 quick up then down with nothing after: both are delivered as they came
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel +120, 60 wheel -120
+out:    160 wheel +120, 160 wheel -120
+
+case:   W2-07 W2 then W1 in one gesture
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel -120, 30 wheel -120, 60 wheel +120, 90 wheel -120
+out:    30 wheel -120, 30 wheel -120, 90 wheel -120
+
+case:   W2-08 filter switched off while a first tick is held
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel -120, 40 off
+out:    40 wheel -120
+
+case:   W2-09 lone tick, then opposite tick inside the guard window
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel -120, 150 wheel +120
+out:    100 wheel -120
+
+case:   W2-10 guard window counts from the hardware tick, not from the late delivery
+config: click=1 bounce=30 hold=0 wheel=1 reverse=200 confirm=150 first=100
+in:     0 wheel -120, 250 wheel +120
+out:    100 wheel -120, 350 wheel +120
+
+# ---------- shapes recorded from the Rival 500 on 2026-11-14 ----------
+# 84 wrong ticks in 1270: always a single one. 62 in mid stroke (3 to 15 ms
+# after the tick before, the next right one within 47 ms), 11 at the end of a
+# stroke (5 to 46 ms after the last tick, then a pause), 11 as the first tick
+# of a stroke (after a pause of 240 to 350 ms, the right ticks 6 to 25 ms later).
+case:   mid stroke misread, turned round: every notch is kept
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     0 wheel +120, 8 wheel +120, 16 wheel +120, 20 wheel -120, 28 wheel +120, 36 wheel +120
+out:    8 wheel +120, 8 wheel +120, 16 wheel +120, 28 wheel +120, 28 wheel +120, 36 wheel +120
+
+case:   mid stroke misread, dropped: one notch short, none the wrong way
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=0
+in:     400 wheel +120, 408 wheel +120, 416 wheel +120, 420 wheel -120, 428 wheel +120, 436 wheel +120
+out:    408 wheel +120, 408 wheel +120, 416 wheel +120, 428 wheel +120, 436 wheel +120
+
+case:   misread last tick of a stroke, turned round: delivered 50 ms late
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     400 wheel +120, 408 wheel +120, 416 wheel +120, 446 wheel -120
+out:    408 wheel +120, 408 wheel +120, 416 wheel +120, 496 wheel +120
+
+case:   misread last tick of a stroke, dropped
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=0
+in:     400 wheel +120, 408 wheel +120, 416 wheel +120, 446 wheel -120
+out:    408 wheel +120, 408 wheel +120, 416 wheel +120
+
+case:   misread first tick of a stroke, turned round: the third tick decides
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     400 wheel +120, 408 wheel +120, 700 wheel -120, 710 wheel +120, 718 wheel +120
+out:    408 wheel +120, 408 wheel +120, 718 wheel +120, 718 wheel +120, 718 wheel +120
+
+case:   misread first tick of a stroke, dropped
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=0
+in:     400 wheel +120, 408 wheel +120, 700 wheel -120, 710 wheel +120, 718 wheel +120
+out:    408 wheel +120, 408 wheel +120, 718 wheel +120, 718 wheel +120
+
+case:   misread SECOND tick of a stroke, turned round: the first tick is not blamed
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     400 wheel +120, 408 wheel +120, 700 wheel +120, 710 wheel -120, 718 wheel +120, 726 wheel +120
+out:    408 wheel +120, 408 wheel +120, 718 wheel +120, 718 wheel +120, 718 wheel +120, 726 wheel +120
+
+case:   misread second tick of a stroke, dropped
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=0
+in:     400 wheel +120, 408 wheel +120, 700 wheel +120, 710 wheel -120, 718 wheel +120, 726 wheel +120
+out:    408 wheel +120, 408 wheel +120, 718 wheel +120, 718 wheel +120, 726 wheel +120
+
+case:   two ticks that disagree and nothing after: both delivered as they came
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     700 wheel +120, 710 wheel -120
+out:    750 wheel +120, 750 wheel -120
+
+case:   after a pair, a wrong tick in mid stroke is still caught
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     0 wheel -120, 9 wheel +120, 17 wheel +120, 25 wheel +120, 29 wheel -120, 37 wheel +120
+out:    17 wheel +120, 17 wheel +120, 17 wheel +120, 25 wheel +120, 37 wheel +120, 37 wheel +120
+
+case:   a real turn after a pause keeps every notch
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     400 wheel +120, 408 wheel +120, 700 wheel -120, 709 wheel -120, 718 wheel -120
+out:    408 wheel +120, 408 wheel +120, 709 wheel -120, 709 wheel -120, 718 wheel -120
+
+case:   one notch back after a pause is delivered, 40 ms late
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     400 wheel +120, 408 wheel +120, 700 wheel -120
+out:    408 wheel +120, 408 wheel +120, 740 wheel -120
+
+case:   slow notch by notch scrolling: each notch 40 ms late, none lost
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     0 wheel -120, 300 wheel -120, 600 wheel -120
+out:    40 wheel -120, 340 wheel -120, 640 wheel -120
+
+case:   a stroke with a slow middle (ticks 50 ms apart) passes untouched after its first tick
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     0 wheel -120, 10 wheel -120, 60 wheel -120, 110 wheel -120
+out:    10 wheel -120, 10 wheel -120, 60 wheel -120, 110 wheel -120
+
+case:   a turn the hand can make (100 ms after the last tick) is a new stroke, not a suspect
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     0 wheel -120, 10 wheel -120, 110 wheel +120, 120 wheel +120
+out:    10 wheel -120, 10 wheel -120, 120 wheel +120, 120 wheel +120
+
+case:   two misread ticks in one stroke are each turned round
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     0 wheel -120, 8 wheel -120, 12 wheel +120, 20 wheel -120, 28 wheel -120, 31 wheel +120, 40 wheel -120
+out:    8 wheel -120, 8 wheel -120, 20 wheel -120, 20 wheel -120, 28 wheel -120, 40 wheel -120, 40 wheel -120
+
+case:   guard switched off while a first tick waits: it is delivered
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=40 flip=1
+in:     0 wheel -120, 15 off, 30 wheel +120
+out:    15 wheel -120, 30 wheel +120
+
+case:   with the first tick wait off, a misread first tick gets through (what the first build did)
+config: click=0 hold=0 wheel=1 reverse=70 confirm=50 first=0 flip=1
+in:     400 wheel +120, 408 wheel +120, 700 wheel -120, 710 wheel +120, 718 wheel +120
+out:    400 wheel +120, 408 wheel +120, 700 wheel -120, 718 wheel +120, 718 wheel +120

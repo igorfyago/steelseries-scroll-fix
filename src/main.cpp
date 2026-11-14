@@ -11,6 +11,12 @@
 //   --count-injected   testing only: also judge events that other programs
 //            inject, so the scripted mouse (inject.exe) can stand in for a real one
 //
+// Talking to the copy that is already running (one runs per session):
+//   fly-by-wire.exe --off    switch the guard off (works from Win+R when the mouse is the problem)
+//   fly-by-wire.exe --on     switch it back on
+//   fly-by-wire.exe --quit   stop it cleanly
+// Ctrl+Alt+Shift+F11 also switches the guard off, from anywhere.
+//
 // The rules are in filter.h, the hook in engine.h, what gets recorded in store.h.
 #include "http.h"
 #include "engine.h"
@@ -25,12 +31,22 @@
 
 using namespace fbw;
 
+// From hid.dll: what a HID device calls itself. Declared here because the SDK
+// header for it drags in driver types this program has no other use for.
+extern "C" BOOLEAN __stdcall HidD_GetProductString(HANDLE device, PVOID buffer, ULONG bufferLength);
+
 namespace {
 
 constexpr UINT kTrayMsg = WM_APP + 10;
+constexpr UINT kCommandMsg = WM_APP + 11;      // from a second copy started with --off, --on or --quit
+enum Command : int { kCmdOff = 0, kCmdOn = 1, kCmdQuit = 2 };
 constexpr UINT kTimerId = 1;
 constexpr int  kHotkeyId = 1;
 enum MenuId : UINT { kMenuGuard = 1, kMenuTuner = 2, kMenuQuit = 3 };
+
+// Changes with every build. The page carries the one it was served with and
+// reloads itself when the program answers with another.
+const char kBuild[] = __DATE__ " " __TIME__;
 
 struct App {
     Engine     engine;
@@ -43,6 +59,7 @@ struct App {
     std::wstring dataDir, webDir;
     int   port = 8479;
     bool  httpUp = false;
+    bool  hotkeyOk = false;
     HWND  hwnd = nullptr;
     HANDLE storeThread = nullptr;
     std::atomic<bool> quit{false};
@@ -133,31 +150,57 @@ void applyFlat(const std::map<std::string, std::string>& m, AppConfig* c) {
         const double v = strtod(it->second.c_str(), &end);
         if (end != it->second.c_str() && v == v) *out = clampTo(v, lo, hi);
     };
+    // Upper limits. A re-press window above 80 ms eats deliberate double
+    // clicks: every click after the first, until the hand pauses. A hold
+    // above 50 ms is a release anyone can feel. 0 switches a rule off for
+    // that button.
     flag("enabled", &c->enabled);
     flag("clickGuard", &c->rules.clickGuard);
-    number("bounceLeft", 0, 150, &c->rules.bounceMs[Left]);
-    number("bounceRight", 0, 150, &c->rules.bounceMs[Right]);
-    number("bounceMiddle", 0, 150, &c->rules.bounceMs[Middle]);
+    number("bounceLeft", 0, 80, &c->rules.bounceMs[Left]);
+    number("bounceRight", 0, 80, &c->rules.bounceMs[Right]);
+    number("bounceMiddle", 0, 80, &c->rules.bounceMs[Middle]);
     double side = c->rules.bounceMs[X1];
-    number("bounceSide", 0, 150, &side);
+    number("bounceSide", 0, 80, &side);
     c->rules.bounceMs[X1] = c->rules.bounceMs[X2] = side;
-    flag("holdGuard", &c->rules.holdGuard);
-    number("holdMs", 1, 60, &c->rules.holdMs);
+    number("holdLeft", 0, 50, &c->rules.holdMs[Left]);
+    number("holdRight", 0, 50, &c->rules.holdMs[Right]);
+    number("holdMiddle", 0, 50, &c->rules.holdMs[Middle]);
+    side = c->rules.holdMs[X1];
+    number("holdSide", 0, 50, &side);
+    c->rules.holdMs[X1] = c->rules.holdMs[X2] = side;
     flag("wheelGuard", &c->rules.wheelGuard);
+    flag("wheelFlip", &c->rules.wheelFlip);
     number("reverseMs", 0, 600, &c->rules.reverseMs);
-    number("confirmMs", 20, 1000, &c->rules.confirmMs);
+    number("confirmMs", 20, 500, &c->rules.confirmMs);
+    number("firstMs", 0, 150, &c->rules.firstMs);
+    // Which mouse: "1038:170E" (vendor and product id in hex), or "" for every mouse.
+    const auto mouse = m.find("mouse");
+    if (mouse != m.end()) {
+        unsigned vid = 0, pid = 0;
+        if (mouse->second.empty()) {
+            c->vid = 0;
+            c->pid = 0;
+        } else if (mouse->second.size() == 9 && sscanf_s(mouse->second.c_str(), "%4x:%4x", &vid, &pid) == 2) {
+            c->vid = static_cast<uint16_t>(vid);
+            c->pid = static_cast<uint16_t>(pid);
+        }
+    }
 }
 
 std::string configJson(const AppConfig& c) {
-    char buf[512];
+    char mouse[16] = "";
+    if (c.vid || c.pid) snprintf(mouse, sizeof(mouse), "%04X:%04X", c.vid, c.pid);
+    char buf[800];
     snprintf(buf, sizeof(buf),
-             "{\n  \"enabled\": %s,\n  \"clickGuard\": %s,\n  \"bounceLeft\": %.0f,\n  \"bounceRight\": %.0f,\n"
-             "  \"bounceMiddle\": %.0f,\n  \"bounceSide\": %.0f,\n  \"holdGuard\": %s,\n  \"holdMs\": %.0f,\n"
-             "  \"wheelGuard\": %s,\n  \"reverseMs\": %.0f,\n  \"confirmMs\": %.0f\n}\n",
-             c.enabled ? "true" : "false", c.rules.clickGuard ? "true" : "false", c.rules.bounceMs[Left],
-             c.rules.bounceMs[Right], c.rules.bounceMs[Middle], c.rules.bounceMs[X1],
-             c.rules.holdGuard ? "true" : "false", c.rules.holdMs, c.rules.wheelGuard ? "true" : "false",
-             c.rules.reverseMs, c.rules.confirmMs);
+             "{\n  \"enabled\": %s,\n  \"mouse\": \"%s\",\n  \"clickGuard\": %s,\n  \"bounceLeft\": %.0f,\n  \"bounceRight\": %.0f,\n"
+             "  \"bounceMiddle\": %.0f,\n  \"bounceSide\": %.0f,\n  \"holdLeft\": %.0f,\n  \"holdRight\": %.0f,\n"
+             "  \"holdMiddle\": %.0f,\n  \"holdSide\": %.0f,\n"
+             "  \"wheelGuard\": %s,\n  \"wheelFlip\": %s,\n  \"reverseMs\": %.0f,\n  \"confirmMs\": %.0f,\n  \"firstMs\": %.0f\n}\n",
+             c.enabled ? "true" : "false", mouse, c.rules.clickGuard ? "true" : "false", c.rules.bounceMs[Left],
+             c.rules.bounceMs[Right], c.rules.bounceMs[Middle], c.rules.bounceMs[X1], c.rules.holdMs[Left],
+             c.rules.holdMs[Right], c.rules.holdMs[Middle], c.rules.holdMs[X1],
+             c.rules.wheelGuard ? "true" : "false", c.rules.wheelFlip ? "true" : "false", c.rules.reverseMs,
+             c.rules.confirmMs, c.rules.firstMs);
     return buf;
 }
 
@@ -181,7 +224,8 @@ void commitConfig(const AppConfig& c) {
         std::lock_guard<std::mutex> lock(g.cfgMu);
         g.cfg = c;
     }
-    g.engine.setConfig(c.rules, c.enabled);
+    g.engine.setConfig(c.rules, c.enabled, c.vid, c.pid);
+    g.store.noteConfig(c, g.engine.nowMs());
     saveConfig(c);
 }
 
@@ -238,7 +282,9 @@ void trayShow(bool on) {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = kTrayMsg;
     nid.hIcon = makeIcon(on);
-    wcscpy_s(nid.szTip, on ? L"fly-by-wire: guard on" : L"fly-by-wire: guard off");
+    wcscpy_s(nid.szTip, !on ? L"fly-by-wire: guard off"
+                        : g.hotkeyOk ? L"fly-by-wire: guard on\nCtrl+Alt+Shift+F11 switches it off"
+                                     : L"fly-by-wire: guard on");
     Shell_NotifyIconW(g.trayShown ? NIM_MODIFY : NIM_ADD, &nid);
     if (nid.hIcon) DestroyIcon(nid.hIcon);
     g.trayShown = true;
@@ -320,8 +366,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             else if (LOWORD(lp) == WM_LBUTTONUP) openTuner();
             return 0;
         case WM_HOTKEY:
-            if (wp == kHotkeyId) setGuard(!currentConfig().enabled);
+            // Off only. A key that could also switch the guard on would leave
+            // its state unknown to someone who cannot see the tray.
+            if (wp == kHotkeyId && currentConfig().enabled) setGuard(false);
             return 0;
+        case kCommandMsg: {
+            const int command = static_cast<int>(wp);
+            if (command == kCmdQuit) DestroyWindow(hwnd);
+            else if (command == kCmdOff && currentConfig().enabled) setGuard(false);
+            else if (command == kCmdOn && !currentConfig().enabled) setGuard(true);
+            return 0;
+        }
         case WM_TIMER:
             if (wp == kTimerId) watchdog();
             return 0;
@@ -340,6 +395,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 // ---- http -------------------------------------------------------------------
 
+// Puts this build's stamp where the page expects it.
+std::string stampBuild(std::string html) {
+    static const char kSlot[] = "__FBW_BUILD__";
+    const size_t at = html.find(kSlot);
+    if (at != std::string::npos) html.replace(at, sizeof(kSlot) - 1, kBuild);
+    return html;
+}
+
 uint64_t querySince(const std::string& query) {
     const size_t p = query.find("since=");
     return p == std::string::npos ? 0 : strtoull(query.c_str() + p + 6, nullptr, 10);
@@ -349,11 +412,15 @@ HttpResponse handle(const HttpRequest& req, void*) {
     HttpResponse res;
     if (req.method == "GET" && (req.path == "/" || req.path == "/index.html")) {
         res.type = "text/html; charset=utf-8";
-        res.body = g.webDir.empty() ? g.page : readFile(g.webDir + L"\\index.html");
+        res.body = g.webDir.empty() ? g.page : stampBuild(readFile(g.webDir + L"\\index.html"));
         return res;
     }
     if (req.method == "GET" && req.path == "/api/state") {
-        res.body = g.store.stateJson(querySince(req.query), currentConfig(), g.engine, g.engine.nowMs(), g.port);
+        AppInfo info;
+        info.port = g.port;
+        info.hotkey = g.hotkeyOk;
+        info.build = kBuild;
+        res.body = g.store.stateJson(querySince(req.query), currentConfig(), g.engine, g.engine.nowMs(), info);
         return res;
     }
     if (req.method == "POST" && req.path == "/api/config") {
@@ -368,7 +435,7 @@ HttpResponse handle(const HttpRequest& req, void*) {
         const auto action = m.find("action");
         bool ok = false;
         if (action != m.end() && action->second == "stop") {
-            g.store.stopTest();
+            g.store.stopTest(g.engine.nowMs());
             ok = true;
         } else if (action != m.end() && action->second == "start") {
             const auto name = m.find("test");
@@ -376,7 +443,9 @@ HttpResponse handle(const HttpRequest& req, void*) {
             int id = kNoTest;
             for (int i = 1; i < kTestCount; ++i) if (name != m.end() && name->second == testName(i)) id = i;
             const AppConfig c = currentConfig();
-            const bool guarded = c.enabled && (id == kTestClicks ? (c.rules.clickGuard || c.rules.holdGuard) : c.rules.wheelGuard);
+            bool anyHold = false;
+            for (double h : c.rules.holdMs) anyHold = anyHold || h > 0;
+            const bool guarded = c.enabled && (id == kTestClicks ? (c.rules.clickGuard || anyHold) : c.rules.wheelGuard);
             const int want = target != m.end() ? atoi(target->second.c_str()) : 0;
             ok = g.store.startTest(id, want, guarded, g.engine.nowMs());
         }
@@ -395,9 +464,37 @@ HttpResponse handle(const HttpRequest& req, void*) {
     return res;
 }
 
+// What a mouse calls itself, for example "SteelSeries Rival 500". Empty when
+// the device does not say.
+std::string productName(const Device& d) {
+    std::string out;
+    if (!d.path[0]) return out;
+    const HANDLE h = CreateFileW(d.path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    wchar_t name[127] = {};
+    if (HidD_GetProductString(h, name, sizeof(name))) {
+        name[126] = 0;
+        for (const wchar_t* c = name; *c; ++c) out += (*c >= 32 && *c < 127) ? static_cast<char>(*c) : '?';
+    }
+    CloseHandle(h);
+    return out;
+}
+
+// Tells the store about mice the hook has met since the last call. Runs on
+// the store thread, before the records that mention them are taken in.
+void noteNewDevices() {
+    static int noted = 0;
+    while (noted < g.engine.deviceCount()) {
+        Device d;
+        if (g.engine.device(noted + 1, &d)) g.store.noteDevice(noted + 1, d, productName(d));
+        ++noted;
+    }
+}
+
 DWORD WINAPI storeLoop(void*) {
     while (!g.quit.load()) {
         WaitForSingleObject(g.engine.recordEvent(), 100);
+        noteNewDevices();
         Rec r;
         while (g.engine.popRecord(&r)) g.store.add(r);
         g.store.poll(g.engine.nowMs());
@@ -418,11 +515,15 @@ std::string loadPageResource() {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     bool open = false;
+    int command = -1;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     for (int i = 1; argv && i < argc; ++i) {
         const std::wstring a = argv[i];
         if (a == L"--open") open = true;
+        else if (a == L"--off") command = kCmdOff;
+        else if (a == L"--on") command = kCmdOn;
+        else if (a == L"--quit") command = kCmdQuit;
         else if (a == L"--count-injected") g.engine.treatInjectedAsReal = true;
         else if (a == L"--port" && i + 1 < argc) g.port = _wtoi(argv[++i]);
         else if (a == L"--data" && i + 1 < argc) g.dataDir = argv[++i];
@@ -432,11 +533,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (g.port < 1024 || g.port > 65535) g.port = 8479;
 
     // One copy per user session: a second hook would judge every event twice.
+    // Access denied means a copy with more rights already holds the name.
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\fly-by-wire");
-    if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
-        if (open) openTuner();
+    const DWORD mutexError = GetLastError();
+    if ((single && mutexError == ERROR_ALREADY_EXISTS) || (!single && mutexError == ERROR_ACCESS_DENIED)) {
+        if (command >= 0) {
+            const HWND running = FindWindowW(L"fly-by-wire", L"fly-by-wire");
+            if (running) PostMessageW(running, kCommandMsg, static_cast<WPARAM>(command), 0);
+        } else if (open) {
+            openTuner();
+        }
         return 0;
     }
+    if (command >= 0) return 0;      // a command for a copy that is not running
 
     if (g.dataDir.empty()) {
         wchar_t base[MAX_PATH];
@@ -450,7 +559,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const std::string saved = readFile(g.dataDir + L"\\config.json");
     if (!saved.empty()) applyFlat(parseFlat(saved), &g.cfg);
 
-    g.page = loadPageResource();
+    g.page = stampBuild(loadPageResource());
     g.store.open(g.dataDir);
 
     if (!g.engine.start()) {
@@ -458,7 +567,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         MessageBoxW(nullptr, L"fly-by-wire could not install its mouse hook.", L"fly-by-wire", MB_ICONERROR);
         return 1;
     }
-    g.engine.setConfig(g.cfg.rules, g.cfg.enabled);
+    g.engine.setConfig(g.cfg.rules, g.cfg.enabled, g.cfg.vid, g.cfg.pid);
+    g.store.noteConfig(g.cfg, g.engine.nowMs());
+    if (!g.engine.rawInput.load()) logLine("raw input could not be registered: mice cannot be told apart, so only \"every mouse\" will filter");
     g.storeThread = CreateThread(nullptr, 0, &storeLoop, nullptr, 0, nullptr);
 
     g.httpUp = g.http.start(static_cast<uint16_t>(g.port), &handle, nullptr);
@@ -471,10 +582,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     RegisterClassW(&wc);
     g.hwnd = CreateWindowExW(0, wc.lpszClassName, L"fly-by-wire", 0, 0, 0, 0, 0, nullptr, nullptr, instance, nullptr);
     g.taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
-    trayShow(g.cfg.enabled);
 
-    // Keyboard way out for when the mouse itself is the problem.
-    RegisterHotKey(g.hwnd, kHotkeyId, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, VK_F12);
+    // Keyboard way out for when the mouse itself is the problem. Not F12:
+    // Windows keeps that key for debuggers. Another program may already own
+    // the combination, so the result is kept and shown.
+    g.hotkeyOk = RegisterHotKey(g.hwnd, kHotkeyId, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, VK_F11) != 0;
+    if (!g.hotkeyOk) logLine("Ctrl+Alt+Shift+F11 is taken by another program: no keyboard off switch");
+    trayShow(g.cfg.enabled);
     GetCursorPos(&g.lastCursor);
     SetTimer(g.hwnd, kTimerId, 2000, nullptr);
     logLine("started");
@@ -496,6 +610,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         WaitForSingleObject(g.storeThread, 2000);
         CloseHandle(g.storeThread);
     }
+    noteNewDevices();
     Rec r;
     while (g.engine.popRecord(&r)) g.store.add(r);
     g.store.close();
