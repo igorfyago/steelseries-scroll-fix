@@ -323,6 +323,7 @@ void updateConfig(Change change) {
     std::lock_guard<std::mutex> lock(g.commitMu);
     AppConfig c = currentConfig();
     change(&c);
+    keepSane(&c.rules);     // as at start-up: the page changes one field at a time
     commitConfig(c);
 }
 

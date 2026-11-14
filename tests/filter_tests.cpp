@@ -883,6 +883,32 @@ static void directChecks() {
         check(again.block && again.verdict == Verdict::WheelFirst, "the next tick the same way counts as its second: the hand turned, this is a first tick of the new way");
         check(f.remembered() == -1, "and the new direction is remembered");
     }
+    // what was settled, for the counts: which way the tick went that was dropped or turned, and how many are held
+    {
+        Config c = allOff();
+        c.wheelGuard = true; c.reverseMs = 70; c.confirmMs = 200; c.turnMs = 1000; c.firstMs = 40; c.wheelFlip = true;
+        Filter f;
+        f.configure(c);
+        Settled s = Settled::None;
+        Emit em;
+        bool has = false;
+        check(f.wheelHeld() == 0, "nothing held at the start");
+        f.wheel(120, 0);
+        check(f.wheelHeld() == 1, "a first tick is one held tick");
+        f.wheel(120, 10);
+        f.wheel(-120, 20);
+        check(f.wheelHeld() == 1, "a held reversal is one held tick");
+        const Outcome mis = f.wheel(120, 30);
+        check(mis.settled == Settled::WheelFlipped && f.settledDelta() == -120, "a misread settled by the next tick: settledDelta is the held tick as the mouse sent it");
+        f.wheel(-120, 50);
+        check(f.tick(250, &s, &em, &has) && s == Settled::WheelFlipped && f.settledDelta() == -120, "a quick reversal turned round at its time-out: settledDelta is the held tick");
+        f.wheel(-120, 3000);
+        f.wheel(120, 3100);
+        check(f.wheelHeld() == 2, "a held reversal and the old-way tick after it are two held ticks");
+        check(f.tick(3300, &s, &em, &has) && s == Settled::WheelFlipped && has && em.delta == 120 && f.settledDelta() == -120,
+              "a pair with no third tick: the one against the remembered direction is turned round, settledDelta says which");
+        check(f.wheelHeld() == 1, "and the other one is still held, to go out next");
+    }
     // the coarse clock: a quick looking turn that was not quick is held as one a hand may have made
     {
         Config c = allOff();
@@ -911,7 +937,7 @@ static void directChecks() {
         check(!next.block && !next.hasEmit && next.settled == Settled::WheelDropped, "the misread is dropped and nothing is sent");
         f.wheel(-120, 40);
         const Outcome turn = f.wheel(-120, 50);
-        check(turn.settled == Settled::WheelConfirmed && !turn.hasEmit, "a real turn: its held first notch is dropped, nothing is sent");
+        check(turn.settled == Settled::WheelTurnLost && !turn.hasEmit, "a real turn: its held first notch is dropped, nothing is sent, and it is reported as lost");
         f.wheel(120, 60);
         check(f.tick(200, &s, &em, &has) && !has && s == Settled::WheelDropped, "a held tick that times out is dropped, not turned");
     }

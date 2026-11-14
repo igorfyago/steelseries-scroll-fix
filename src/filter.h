@@ -30,11 +30,19 @@
 //                         for a third tick, which decides (see W2).
 //                         Nothing in time: a tick that came sooner than
 //                         reverseMs after the last one (no hand turns a wheel
-//                         round that fast) is turned round after confirmMs; a
-//                         later one is dropped after turnMs and the direction
-//                         stays, though the next tick, whenever it comes, still
-//                         counts as its second. So one notch back and forth is
-//                         lost: the price of never moving the wrong way.
+//                         round that fast) is a misread, turned round (or
+//                         dropped) after confirmMs, and lends the next tick no
+//                         direction; a later one is dropped after turnMs and
+//                         the direction stays, though the next tick, whenever
+//                         it comes, still counts as its second. So one notch
+//                         back and forth is lost: that is the price.
+//                         What it does not catch: two misreads with one right
+//                         tick between them look exactly like a turn whose
+//                         second notch was misread, and the third tick decides
+//                         for the turn. On the recordings this was built from
+//                         that shape was a turn 15 times for every once it was
+//                         two misreads (misreads came at fixed places of the
+//                         wheel, never two ticks apart).
 //                         turnMs 0 is the rule before: only a tick sooner than
 //                         reverseMs is judged, and after a pause every stroke
 //                         starts fresh.
@@ -44,13 +52,15 @@
 //                         direction to be checked against, waits up to firstMs
 //                         for the second. If they agree both are delivered. If
 //                         they disagree one of the two was misread, so both
-//                         wait for a third tick (confirmMs with a direction
-//                         remembered, else firstMs), and the odd one out is
-//                         turned round or dropped. With no third tick the
-//                         remembered direction decides, and with none
-//                         remembered both are delivered as they came. A lone
-//                         first tick is delivered as it came, firstMs late.
-//                         0 switches this off.
+//                         wait for a third tick (confirmMs with turnMs on, else
+//                         firstMs), and the odd one out is turned round or
+//                         dropped. With no third tick the remembered direction
+//                         decides. A lone first tick is delivered as it came,
+//                         firstMs late. 0 switches this off.
+//                         The first tick since the program started has nothing
+//                         to go by: with turnMs on it waits confirmMs, and if
+//                         the first two disagree with no third tick, neither
+//                         goes out. (turnMs 0: both are delivered as they came.)
 //
 // Why turning a tick round is sound, measured on the mouse this was built for
 // (1270 ticks, 84 of them the wrong way): strokes with a wrong tick have the
@@ -128,6 +138,7 @@ enum class Settled : uint8_t {
     WheelFlipped,        // the held tick was sent turned round: the next tick showed it was misread
     WheelLate,           // W2: nothing followed the first tick, so it was sent as it came
     WheelStarted,        // W2: the second tick agreed with the first, which was then sent
+    WheelTurnLost,       // W1: the next tick agreed, the turn was real, but its held first notch was dropped: this program may not send ticks
 };
 
 struct Config {
@@ -267,12 +278,16 @@ public:
                 // Its first notch goes out late, or not at all when this
                 // program may not send ticks.
                 held_ = Held::None;
-                o.settled = Settled::WheelConfirmed;
-                if (cfg_.wheelResend) send(&o, heldDelta_);
+                if (cfg_.wheelResend) {
+                    o.settled = Settled::WheelConfirmed;
+                    send(&o, heldDelta_);
+                } else {
+                    o.settled = Settled::WheelTurnLost;
+                }
                 accept(dir, t, sys);
                 return o;
             }
-            if (heldSlow_ && firstWait() > 0) {
+            if (heldSlow_ && cfg_.wheelResend) {
                 // A hand may have made the held tick (it came after a pause),
                 // and then this one is the misread. One of the two is wrong,
                 // and a third tick says which.
@@ -359,7 +374,11 @@ public:
         // A new stroke, or the remembered one going on after a pause.
         if (firstWait() > 0) {
             hold(Held::First, delta, t, sys);
-            releaseAt_ = t + cfg_.firstMs;
+            // The first tick since the program started becomes the remembered
+            // direction, so it waits as long as a suspect tick does for the
+            // next one to say what it was.
+            const bool firstEver = remembers() && !hasDir_ && cfg_.confirmMs > cfg_.firstMs;
+            releaseAt_ = t + (firstEver ? cfg_.confirmMs : cfg_.firstMs);
             o.block = true;
             o.verdict = Verdict::WheelFirst;
             return o;
@@ -387,6 +406,7 @@ public:
         }
         if (held_ == Held::Reversal && t >= heldAt_ + reversalWait()) {
             held_ = Held::None;
+            settledDelta_ = heldDelta_;
             if (!heldSlow_ && turnsTicks()) {
                 // Too soon after the stroke to be a hand: the last step of the
                 // stroke, read backwards. It did happen, when the mouse sent
@@ -395,6 +415,12 @@ public:
                 emit->delta = -heldDelta_;
                 *hasEmit = true;
                 *settled = Settled::WheelFlipped;
+                accept(dir_, heldAt_, heldSys_);
+            } else if (!heldSlow_ && remembers()) {
+                // Too soon to be a hand, and it may not be turned round: a
+                // misread, dropped. The stroke went on through it, and it
+                // lends the next tick no direction.
+                *settled = Settled::WheelDropped;
                 accept(dir_, heldAt_, heldSys_);
             } else if (remembers()) {
                 // Dropped, and the remembered direction stays. Whether the
@@ -424,15 +450,9 @@ public:
                 // against the remembered direction was misread. It goes out
                 // turned round (or is dropped) now, the other one as it came
                 // on the next call.
-                const bool firstWrong = sign(heldDelta_) != dir_;
-                const int wrong = firstWrong ? heldDelta_ : heldDelta2_;
+                const int wrong = keepRemembered();
+                settledDelta_ = wrong;
                 releaseAt_ = heldAt2_ + pairWait();     // that is now
-                if (firstWrong) {
-                    heldDelta_ = heldDelta2_;
-                    heldAt_ = heldAt2_;
-                    heldSys_ = heldSys2_;
-                }
-                held_ = Held::First;
                 if (turnsTicks()) {
                     emit->kind = Emit::Wheel;
                     emit->delta = -wrong;
@@ -441,6 +461,15 @@ public:
                 } else {
                     *settled = Settled::WheelDropped;
                 }
+                return true;
+            }
+            if (remembers()) {
+                // Nothing remembered yet (the program just started) and
+                // nothing says which of the two was misread: neither goes
+                // out. A lost notch is better than one the wrong way.
+                held_ = Held::None;
+                settledDelta_ = 0;
+                *settled = Settled::WheelDropped;
                 return true;
             }
             // No direction to go by. Deliver both as they came: first one
@@ -466,7 +495,9 @@ public:
     // Let go of everything that is being held back, for when the guard is
     // switched off or the program exits. Held releases are sent so no button
     // stays down for applications. Held first ticks are sent as they came. A
-    // held reversed tick is most likely a misread, and is forgotten.
+    // held reversed tick is most likely a misread, and is forgotten. Of two
+    // held ticks that disagree, the one against the remembered direction is
+    // forgotten as well; with none remembered yet, both are.
     bool flush(Emit* emit) {
         for (int b = 0; b < kButtons; ++b) {
             Btn& s = btn_[b];
@@ -477,6 +508,10 @@ public:
                 emit->button = b;
                 return true;
             }
+        }
+        if (held_ == Held::Pair && remembers()) {
+            if (hasDir_) keepRemembered();
+            else held_ = Held::None;
         }
         if (held_ == Held::First || held_ == Held::Pair) {
             releaseFirst(emit);
@@ -543,6 +578,14 @@ public:
     // The wheel direction the rules go by: 1 up, -1 down, 0 none yet.
     int remembered() const { return hasDir_ ? dir_ : 0; }
 
+    // The held tick the last WheelDropped or WheelFlipped was about, as the
+    // mouse sent it, so a count can tell a misread from a right notch the
+    // rules gave up. 0 when it was about two ticks at once.
+    int settledDelta() const { return settledDelta_; }
+
+    // How many wheel ticks are being held right now: 0, 1 or 2.
+    int wheelHeld() const { return held_ == Held::Pair ? 2 : held_ == Held::None ? 0 : 1; }
+
 private:
     struct Btn {
         bool   appDown = false;     // what applications believe
@@ -603,12 +646,28 @@ private:
 
     // A held tick turned out to be a misread step: send it turned round, or drop it.
     void settleMisread(Outcome* o, int delta) {
+        settledDelta_ = delta;
         if (turnsTicks()) {
             o->settled = Settled::WheelFlipped;
             send(o, -delta);
         } else {
             o->settled = Settled::WheelDropped;
         }
+    }
+
+    // Of two held ticks that disagree, the one against the remembered
+    // direction was misread. The other stays held as a lone first tick, to go
+    // out as it came. Returns the misread one.
+    int keepRemembered() {
+        const bool firstWrong = sign(heldDelta_) != dir_;
+        const int wrong = firstWrong ? heldDelta_ : heldDelta2_;
+        if (firstWrong) {
+            heldDelta_ = heldDelta2_;
+            heldAt_ = heldAt2_;
+            heldSys_ = heldSys2_;
+        }
+        held_ = Held::First;
+        return wrong;
     }
 
     void hold(Held kind, int delta, double t, const Stamp& sys) {
@@ -649,6 +708,7 @@ private:
     Stamp  heldSys_, heldSys2_;
     bool   heldSlow_ = false;   // the held reversal came reverseMs or more after the stroke: a hand may have done it
     bool   pairTurn_ = false;   // the pair began as a held reversal
+    int    settledDelta_ = 0;   // see settledDelta()
     int    doubt_ = 0;          // direction of a reversal dropped for want of a second tick, 0 none
     double doubtAt_ = 0;
     Stamp  doubtSys_;

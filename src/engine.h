@@ -73,6 +73,7 @@ struct Rec {
     uint8_t  blocked = 0;
     uint8_t  verdict = 0;     // fbw::Verdict
     uint8_t  settled = 0;     // fbw::Settled
+    int16_t  settledDelta = 0;  // a held wheel tick dropped or turned round: which way it went as the mouse sent it
     uint8_t  flags = 0;       // LLMHF_* as Windows reported them
     uint8_t  vetoed = 0;      // the fine clock said block, the coarse clock said no
     uint8_t  stalled = 0;     // verdict not trusted (see kStallMs, kLateMs): passed
@@ -296,6 +297,8 @@ private:
             r.t = nowMs();
             r.kind = kSettled;
             r.settled = static_cast<uint8_t>(settled);
+            if (settled == Settled::WheelDropped || settled == Settled::WheelFlipped)
+                r.settledDelta = static_cast<int16_t>(filter_.settledDelta());
             r.judged = 1;
             if (hasEmit && e.kind == Emit::ButtonUp) r.button = static_cast<uint8_t>(e.button);
             push(r);
@@ -648,6 +651,8 @@ private:
         r.blocked = o.block ? 1 : 0;
         r.verdict = static_cast<uint8_t>(o.verdict);
         r.settled = static_cast<uint8_t>(o.settled);
+        if (o.settled == Settled::WheelDropped || o.settled == Settled::WheelFlipped)
+            r.settledDelta = static_cast<int16_t>(e->filter_.settledDelta());
         r.vetoed = o.vetoed ? 1 : 0;
         r.gap = static_cast<float>(o.gapMs);
         if (o.hasEmit) e->emit(o.emit);

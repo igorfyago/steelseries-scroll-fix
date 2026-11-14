@@ -23,22 +23,22 @@ The price: a single notch back and forth on its own is lost, and a turn of the w
 |---|---|---|
 | A misread tick | dropped | turned the right way round, so you keep every notch |
 | A turn of the wheel | its first notch is lost | its first notch arrives with the second |
-| The first tick after a pause | passes at once | waits up to 40 ms for the second; if the first two disagree, a third decides |
+| The first tick after a pause | passes at once | waits up to 40 ms for the second (0.2 s for the first since the program started); if the first two disagree, a third decides |
 | Programs that read raw input (some games) | see the mouse exactly as it is | also get the ticks this program sends, so some ticks twice |
 
 Why the second column exists: a stroke with a wrong tick in it has as many ticks as a stroke without one. The wrong tick takes the place of a right one, so turning it round is the exact repair.
 
 Why it is off by default: Windows hands every tick to programs that read raw input before any program like this can hold it back (measured: a tick blocked by the hook still reaches raw input). Sending ticks is safe for browsers, Windows itself and most applications, and for games that read ordinary mouse messages (Age of Empires II DE imports no raw input function). For a game that reads raw input it adds ticks. If your games are not of that kind, switch it on.
 
-All of one day's scroll tests on that mouse (14 runs, 4100 ticks, fast and slow), run back through the rules with `replay.exe`:
+All of one day's scroll tests on that mouse (16 runs, 4500 ticks, fast and slow), run back through the rules with `replay.exe`:
 
 | | Wrong ticks reaching programs |
 |---|---|
-| No guard | 317 |
+| No guard | 351 |
 | Guard, default | 20, a notch lost for each misread |
 | Guard, Send corrected ticks | 25, every notch kept |
 
-All that is left comes from one run, stopped early, where the wheel went the other way 5 to 8 ticks at a time. Nothing that goes by single misreads can tell that from a turn of the hand. The other 13 runs: 0 wrong ticks in both modes.
+All that is left comes from one run, stopped early, where the wheel went the other way 5 to 8 ticks at a time. Nothing that goes by single misreads can tell that from a turn of the hand. The other 15 runs: 0 wrong ticks in both modes. Two of them ran live with the guard on: 34 misreads, none reached a program.
 
 ## What it does to clicks
 
@@ -90,7 +90,7 @@ Checks:
 
 | Check | What it proves |
 |---|---|
-| `tests\cases.txt` via `build.ps1 -Only tests` | the rules give the right output for 185 event sequences; 84 of them come from an independent reference model of the click rules and of the wheel rule without the remembered direction (four differ on purpose, with the reason written next to them) |
+| `tests\cases.txt` via `build.ps1 -Only tests` | the rules give the right output for 200 event sequences; 84 of them come from an independent reference model of the click rules and of the wheel rule without the remembered direction (four differ on purpose, with the reason written next to them) |
 | `tests\mutation_check.ps1` | the tests can fail: every deliberately broken copy of the rules, the mouse matching and the click pair definition must be caught |
 | `build\selftest.exe` | the real hook on the real desktop does what the rules say (takes over the mouse for 30 seconds) |
 | `tests\verify_recorder.ps1` | the recorder counts a scripted faulty mouse exactly (takes over the mouse for a minute) |

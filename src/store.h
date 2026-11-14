@@ -45,7 +45,8 @@ inline const char* testName(int id) {
 }
 
 // A test ends this long after its last counted event, so a late bounce or a
-// tick from the wheel settling still lands inside the test.
+// tick from the wheel settling still lands inside the test, and no earlier
+// than this after the longest a wheel tick of it may still be held.
 constexpr double kTestTailMs = 600;
 // The click on the Start button is not part of the clicks test, and neither is
 // a bounce of that click.
@@ -153,7 +154,7 @@ public:
     void poll(double now) {
         std::lock_guard<std::mutex> lock(mu_);
         lastNow_ = now;
-        if (run_.active && run_.good >= run_.target && now - run_.lastT >= kTestTailMs) {
+        if (run_.active && run_.good >= run_.target && now - (run_.lastT > heldUntil_ ? run_.lastT : heldUntil_) >= kTestTailMs) {
             stoppedT_ = now;          // the page swaps Stop for Start now too
             finish(now);
         }
@@ -181,6 +182,9 @@ public:
                  c.rules.wheelResend ? 1 : 0);
         configLine_ = buf;
         keepDays_ = c.keepDays;
+        reverseMs_ = c.rules.reverseMs;
+        confirmMs_ = c.rules.confirmMs;
+        turnMs_ = c.rules.turnMs;
         if (log_) fprintf(log_, "# config t_ms=%.3f %s\n", now, configLine_.c_str());
     }
 
@@ -220,6 +224,7 @@ public:
         run_.startedT = run_.lastT = now;
         for (int b = 0; b < kButtons; ++b) { testUp_[b] = -1; testDown_[b] = -1; testHold_[b] = -1; suspectGap_[b] = -1; suspectDropped_[b] = false; testUpSysOk_[b] = false; }
         lastGoodT_ = -1;
+        heldUntil_ = -1;
         if (log_) fprintf(log_, "# test %s start t_ms=%.3f target=%d guarded=%d\n", testName(id), now, target, guarded ? 1 : 0);
         return true;
     }
@@ -412,7 +417,7 @@ private:
         }
 
         if (r.kind == kSettled) {
-            countWheelOutcome(r.settled);
+            countWheelOutcome(r.settled, r.settledDelta);
             return;
         }
 
@@ -488,7 +493,14 @@ private:
                 }
                 physTick_ = r.t;
                 physDir_ = dir;
-                countWheelOutcome(r.settled);
+                countWheelOutcome(r.settled, r.settledDelta);
+                // A tick the rules hold is decided up to their longest wait
+                // later: the test stays open until then, so the decision lands in it.
+                if (r.blocked && run_.active && (run_.id == kTestUp || run_.id == kTestDown)) {
+                    const bool mayBeHand = r.verdict == static_cast<uint8_t>(Verdict::WheelHeld) && (r.vetoed || r.gap >= reverseMs_);
+                    const double until = r.t + (mayBeHand && turnMs_ > confirmMs_ ? turnMs_ : confirmMs_);
+                    if (until > heldUntil_) heldUntil_ = until;
+                }
             }
             if (run_.active && (run_.id == kTestUp || run_.id == kTestDown) && delivered) {
                 const int want = run_.id == kTestUp ? 1 : -1;
@@ -505,15 +517,22 @@ private:
         }
     }
 
-    // What became of a held wheel tick. A tick dropped or turned round is a
-    // fault the guard removed.
-    void countWheelOutcome(uint8_t settled) {
+    // What became of a held wheel tick. In a scroll test, a tick dropped or
+    // turned round that went against the test's direction is a fault the guard
+    // removed; one that went the test's way was a right notch the rules gave
+    // up, not a fix. A real turn whose first notch could not be sent lost that
+    // notch: dropped, but no fault.
+    void countWheelOutcome(uint8_t settled, int settledDelta) {
         const bool dropped = settled == static_cast<uint8_t>(Settled::WheelDropped);
         const bool turned = settled == static_cast<uint8_t>(Settled::WheelFlipped);
-        if (dropped) ++counters_.reversalsDropped;
+        const bool lost = settled == static_cast<uint8_t>(Settled::WheelTurnLost);
+        if (dropped || lost) ++counters_.reversalsDropped;
         if (turned) ++counters_.ticksTurned;
-        if (settled == static_cast<uint8_t>(Settled::WheelConfirmed)) ++counters_.reversalsConfirmed;
-        if ((dropped || turned) && run_.active && run_.id != kTestClicks) ++run_.caught;
+        if (lost || settled == static_cast<uint8_t>(Settled::WheelConfirmed)) ++counters_.reversalsConfirmed;
+        if ((dropped || turned) && settledDelta != 0 && run_.active && (run_.id == kTestUp || run_.id == kTestDown)) {
+            const int want = run_.id == kTestUp ? 1 : -1;
+            if ((settledDelta > 0 ? 1 : -1) != want) ++run_.caught;
+        }
     }
 
     // Counts one press of a clicks test. Four places it can go:
@@ -866,6 +885,8 @@ private:
     bool   suspectDropped_[kButtons] = {};                    // and whether the guard dropped it
     double testTick_ = -1;
     double lastNow_ = 0;             // the latest time this store was told
+    double heldUntil_ = -1;          // a wheel tick held in this test may be decided until then
+    double reverseMs_ = 70, confirmMs_ = 200, turnMs_ = 1000;   // the wheel windows in force
     double stoppedT_ = -1e9;         // when a test was last stopped by hand
     double lastGoodT_ = -1;          // the last press counted as made by a finger: when, which button,
     int    lastGoodB_ = 0;           // whether it was a fast one, and the fastest gap before it

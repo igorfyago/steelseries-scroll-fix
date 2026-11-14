@@ -98,6 +98,15 @@ try {
     Expect 'turning:   40 up, 3 reversed'     (Invoke-Test 'up' 40 10)    43 0 3
     Expect 'turning:   40 down, 3 reversed'   (Invoke-Test 'down' 40 10)  43 0 3
 
+    # Settings from the page are made sane as they are at start-up: a reversal
+    # window above the confirm window pulls the confirm window (and the turn
+    # wait) up with it, or a slow real turn would be turned round notch by notch.
+    Send-Post '/api/config' @{ reverseMs = 300 }
+    $s = Get-State
+    if ($s.config.confirmMs -ne 300 -or $s.config.turnMs -lt 300) { $failed++; "FAIL  a reversal window of 300 left the confirm window at $($s.config.confirmMs) and the turn wait at $($s.config.turnMs)" }
+    else { 'PASS  a reversal window above the confirm window pulls it up' }
+    Send-Post '/api/config' @{ reverseMs = 70; confirmMs = 200 }
+
     # A bounced click on Start must not restart the test, and one that lands on
     # Stop right after must not end it. (First a pause: a start right after a
     # test ended by itself is ignored too, which is checked further down.)

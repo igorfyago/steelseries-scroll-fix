@@ -888,17 +888,17 @@ out:    0 R down, 60.5 R up
 case:   remembered: a slow misread between slow notches is turned round, every notch kept
 config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
 in:     0 wheel +120, 150 wheel +120, 300 wheel -120, 450 wheel +120, 600 wheel +120
-out:    40 wheel +120, 190 wheel +120, 600 wheel +120, 600 wheel +120, 600 wheel +120
+out:    150 wheel +120, 150 wheel +120, 600 wheel +120, 600 wheel +120, 600 wheel +120
 
 case:   remembered: a slow tick against it with nothing after is dropped after turnMs, the direction stays
 config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
 in:     0 wheel +120, 150 wheel +120, 300 wheel -120, 2000 wheel +120
-out:    40 wheel +120, 190 wheel +120, 2040 wheel +120
+out:    150 wheel +120, 150 wheel +120, 2040 wheel +120
 
 case:   remembered: once the old way came back, the next tick against it is held again
 config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
 in:     0 wheel +120, 150 wheel +120, 300 wheel -120, 2000 wheel +120, 2500 wheel -120, 2650 wheel +120
-out:    40 wheel +120, 190 wheel +120, 2040 wheel +120, 2850 wheel +120, 2850 wheel +120
+out:    150 wheel +120, 150 wheel +120, 2040 wheel +120, 2850 wheel +120, 2850 wheel +120
 
 case:   remembered: two ticks the other way are a turn of the hand, and the new direction stays
 config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
@@ -948,7 +948,7 @@ out:    10 wheel +120, 10 wheel +120, 155 wheel +120, 173 wheel -120, 173 wheel 
 case:   remembered: the guard switched off and on forgets a dropped tick, the next one against is held again
 config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
 in:     0 wheel +120, 150 wheel +120, 300 wheel -120, 1400 off, 1500 on, 1600 wheel -120, 1750 wheel -120
-out:    40 wheel +120, 190 wheel +120, 1750 wheel -120, 1750 wheel -120
+out:    150 wheel +120, 150 wheel +120, 1750 wheel -120, 1750 wheel -120
 
 case:   remembered, without sending: a turn loses its first notch
 config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1 resend=0
@@ -969,6 +969,75 @@ config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=0 first=40 flip=1
 in:     0 wheel +120, 150 wheel +120, 300 wheel -120, 450 wheel +120
 out:    40 wheel +120, 190 wheel +120, 340 wheel -120, 490 wheel +120
 
+# ---------- found by the review of the remembered direction ----------
+case:   remembered: let go while a held reversal and the old-way tick wait for a third: the reversal is forgotten
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
+in:     0 wheel -120, 15 wheel -120, 5000 wheel +120, 5100 wheel -120, 5150 off
+out:    15 wheel -120, 15 wheel -120, 5150 wheel -120
+
+case:   remembered: let go while two first ticks disagree: the one against the remembered direction is forgotten
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
+in:     0 wheel -120, 15 wheel -120, 5000 wheel -120, 5020 wheel +120, 5100 off
+out:    15 wheel -120, 15 wheel -120, 5100 wheel -120
+
+case:   remembered, without sending: a misread too soon to be a hand gives the next tick that way no credit
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1 resend=0
+in:     0 wheel +120, 10 wheel +120, 21 wheel -120, 600 wheel -120, 700 wheel +120, 800 wheel +120
+out:    0 wheel +120, 10 wheel +120, 700 wheel +120, 800 wheel +120
+
+case:   remembered, turning off: a misread too soon to be a hand gives the next tick that way no credit
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=0
+in:     0 wheel +120, 10 wheel +120, 21 wheel -120, 600 wheel -120, 700 wheel +120, 800 wheel +120
+out:    10 wheel +120, 10 wheel +120, 800 wheel +120, 800 wheel +120
+
+case:   remembered, without sending: a misread too soon to be a hand does not count as half of a later turn
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1 resend=0
+in:     0 wheel -120, 50 wheel -120, 100 wheel -120, 150 wheel +120, 3000 wheel +120, 3050 wheel -120, 3100 wheel -120, 3150 wheel -120
+out:    0 wheel -120, 50 wheel -120, 100 wheel -120, 3050 wheel -120, 3100 wheel -120, 3150 wheel -120
+
+case:   remembered, misread ticks dropped: a misread too soon to be a hand does not count as half of a later turn
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=0
+in:     0 wheel -120, 50 wheel -120, 100 wheel -120, 150 wheel +120, 3000 wheel +120, 3050 wheel -120, 3100 wheel -120, 3150 wheel -120
+out:    50 wheel -120, 50 wheel -120, 100 wheel -120, 3100 wheel -120, 3100 wheel -120, 3150 wheel -120
+
+case:   remembered, without sending: a reversal too soon to be a hand does not make one later tick a turn (recorded, seq 20543-20563)
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1 resend=0
+in:     0 wheel -120, 20 wheel -120, 60 wheel -120, 3045 wheel -120, 3056 wheel -120, 3076 wheel -120, 3093 wheel -120, 3120 wheel +120, 4852 wheel +120, 5857 wheel -120, 5876 wheel +120, 5898 wheel -120, 5937 wheel -120
+out:    0 wheel -120, 20 wheel -120, 60 wheel -120, 3045 wheel -120, 3056 wheel -120, 3076 wheel -120, 3093 wheel -120, 5857 wheel -120, 5898 wheel -120, 5937 wheel -120
+
+case:   remembered, first wait off: after a pause the hand turned and its second tick was misread: the third tick decides for the turn
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=0 flip=1
+in:     0 wheel -120, 15 wheel -120, 5000 wheel +120, 5040 wheel -120, 5200 wheel +120, 5220 wheel +120
+out:    0 wheel -120, 15 wheel -120, 5200 wheel +120, 5200 wheel +120, 5200 wheel +120, 5220 wheel +120
+
+case:   remembered, from start: a misread first entry is judged by the ticks after it
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
+in:     0 wheel +120, 100 wheel -120, 200 wheel -120, 300 wheel -120
+out:    200 wheel -120, 200 wheel -120, 200 wheel -120, 340 wheel -120
+
+case:   remembered, from start: two first ticks that disagree with no third: neither goes out
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
+in:     0 wheel +120, 49 wheel -120
+out:
+
+case:   remembered, from start: a slow second tick that disagrees and no third: nothing goes the wrong way
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
+in:     0 wheel +120, 100 wheel -120
+out:
+
+case:   remembered, from start: a lone first tick waits confirmMs, then goes out as it came
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
+in:     0 wheel -120, 500 wheel -120
+out:    200 wheel -120, 540 wheel -120
+case:   remembered, from start: let go while two first ticks disagree: neither goes out
+config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1
+in:     0 wheel +120, 49 wheel -120, 100 off
+out:
+
+case:   remembered, turning off: a quick misread dropped at its time-out lets the stroke go on through it (confirm under reverse)
+config: click=0 hold=0 wheel=1 reverse=150 confirm=100 turn=1000 first=40 flip=0
+in:     0 wheel +120, 10 wheel +120, 20 wheel -120, 160 wheel +120
+out:    10 wheel +120, 10 wheel +120, 160 wheel +120
 case:   B with a release delay longer than the bounce window, a short press is held the longer of the two
 config: click=1 bounce=20 hold=0 holdL=25 blip=20 wheel=0
 in:     0 L down, 3 L up

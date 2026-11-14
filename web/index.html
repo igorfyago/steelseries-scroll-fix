@@ -441,7 +441,7 @@
     if (e.src === 1 || (e.src === 0 && e.k !== 3 && !e.j)) return 'other';
     if (e.src === 2) return 'sent';
     if (e.x && (e.v === 3 || isHeldTick(e))) {
-      if (e.fate === 2 || e.fate === 4 || e.fate === 5) return 'dropped';
+      if (e.fate === 2 || e.fate === 4 || e.fate === 5 || e.fate === 8) return 'dropped';
       return e.fate ? '' : 'held';
     }
     if (e.x || (e.k === 3 && e.st === 4)) return 'dropped';
@@ -460,7 +460,7 @@
       var wheel = st >= 3, decider = wheel && s.k === 1 ? s : null;
       for (var j = i - 1; j >= 0 && j >= i - 40; j--) {
         var h = list[j];
-        if (!h.x || h.fate || s.t - h.t > 1000) continue;
+        if (!h.x || h.fate || s.t - h.t > 6000) continue;     // the longest hold: Turn wait (up to 5 s) and a pair after it
         if (wheel ? !isHeldTick(h) : (h.v !== 3 || h.b !== s.b)) continue;
         if (decider && (st === 4 || st === 5)) h.fate = (h.w > 0) === (decider.w > 0) ? 3 : st;
         else h.fate = st;

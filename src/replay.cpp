@@ -13,7 +13,7 @@
 //   --wheel 0|1        wheel rules on or off             (default 1)
 //   --resend 0|1       send corrected wheel ticks        (default 0)
 //   --reverse N        reversal window, ms               (default 70)
-//   --confirm N        confirm window, ms                (default 150, never below --reverse)
+//   --confirm N        confirm window, ms                (default 200, never below --reverse)
 //   --turn N           wait of a later tick against the remembered direction, ms;
 //                      0: no direction is remembered     (default 1000, never below --confirm)
 //   --first N          first tick wait, ms, 0 is off     (default 40, only with --resend 1)
@@ -224,6 +224,12 @@ void play(const Config& cfg, const Segment& seg, std::vector<Out>* out, std::vec
             if (src && s == Settled::WheelFlipped) dropped->push_back(Dropped{src, Verdict::WheelFirst, -1, -1, -1});
             if (src && s == Settled::WheelDropped) dropped->push_back(Dropped{src, Verdict::WheelHeld, -1, -1, -1});
             if (src) heldTicks.erase(heldTicks.begin() + static_cast<std::ptrdiff_t>(which));
+            // A held tick the filter let go of without sending it went nowhere
+            // (two that disagreed with nothing to decide between them).
+            while (heldTicks.size() > static_cast<size_t>(f.wheelHeld())) {
+                dropped->push_back(Dropped{heldTicks.front(), Verdict::WheelHeld, -1, -1, -1});
+                heldTicks.erase(heldTicks.begin());
+            }
         }
     };
     for (const Ev& e : seg.events) {
@@ -239,6 +245,9 @@ void play(const Config& cfg, const Segment& seg, std::vector<Out>* out, std::vec
                     }
                 }
             }
+            // A real turn whose held first notch could not be sent: that notch is lost.
+            if (o.settled == Settled::WheelTurnLost)
+                for (const Ev* h : heldTicks) dropped->push_back(Dropped{h, Verdict::WheelHeld, -1, -1, -1});
             heldTicks.clear();
         }
         if (!o.block) {
