@@ -87,7 +87,7 @@ enum class Settled : uint8_t {
 
 struct Config {
     bool   clickGuard = true;
-    double bounceMs[kButtons] = {30, 30, 30, 30, 30};   // 0 switches C1 off for that button. The owner's own hand goes down to 49 ms.
+    double bounceMs[kButtons] = {20, 20, 20, 20, 20};   // 0 switches C1 off for that button. The owner's own hand goes down to 30 ms.
     double holdMs[kButtons] = {0, 0, 0, 0, 0};          // 0 switches C2 off for that button
     bool   wheelGuard = true;
     double reverseMs = 70;      // W1: a turn this soon after the last tick is suspect

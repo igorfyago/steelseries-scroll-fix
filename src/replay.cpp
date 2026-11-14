@@ -30,13 +30,13 @@
 #include <vector>
 
 #include "filter.h"
+#include "pairs.h"
 
 using namespace fbw;
 
 namespace {
 
-// The same definitions the recorder uses for its guided tests (store.h).
-constexpr double kBuggedPressMs = 30;
+// The same definition the recorder uses for the start of a clicks test (store.h).
 constexpr double kTestLeadMs = 350;
 
 struct Ev {
@@ -260,11 +260,19 @@ void describe(const Segment& seg, std::vector<Dropped>* dropped) {
 
 struct RunCount { int good = 0, wrong = 0; };
 
-// Counts a guided test the way the recorder does, on a stream of delivered events.
+// Counts a guided test the way the recorder does, on a stream of delivered
+// events. A press that comes soon after a release is judged when it is let go,
+// because how long it lasted is part of the verdict (pairs.h).
 template <typename Stream>
 std::map<std::string, RunCount> countTests(const Stream& stream) {
+    struct Button { std::string run; double lastUp = -1, lastDown = -1, lastHold = -1, suspect = -1; };
     std::map<std::string, RunCount> runs;
-    std::map<std::string, double> lastUp;
+    std::map<std::string, Button> buttons;
+    auto settle = [&](Button& b, double hold) {
+        if (b.suspect < 0) return;
+        if (buggedPair(b.suspect, b.lastHold, hold)) ++runs[b.run].wrong; else ++runs[b.run].good;
+        b.suspect = -1;
+    };
     for (const auto& e : stream) {
         if (e.test.empty()) continue;
         char key[64];
@@ -274,17 +282,25 @@ std::map<std::string, RunCount> countTests(const Stream& stream) {
             if (e.wheel) continue;
             char bkey[80];
             snprintf(bkey, sizeof(bkey), "%s/%d", key, e.button);
+            Button& b = buttons[bkey];
+            b.run = key;
             if (e.down) {
-                const auto it = lastUp.find(bkey);
-                if (it != lastUp.end() && e.t - it->second < kBuggedPressMs) ++r.wrong; else ++r.good;
+                const double gap = b.lastUp >= 0 ? e.t - b.lastUp : -1;
+                settle(b, -1);
+                if (gap >= 0 && gap < kSuspectGapMs) b.suspect = gap; else ++r.good;
+                b.lastDown = e.t;
             } else {
-                lastUp[bkey] = e.t;
+                const double hold = b.lastDown >= 0 ? e.t - b.lastDown : -1;
+                settle(b, hold);
+                b.lastHold = hold;
+                b.lastUp = e.t;
             }
         } else if (e.wheel) {
             const int want = e.test == "up" ? 1 : -1;
             if ((e.delta > 0 ? 1 : -1) == want) ++r.good; else ++r.wrong;
         }
     }
+    for (auto& kv : buttons) settle(kv.second, -1);     // still held down when the recording ended
     return runs;
 }
 

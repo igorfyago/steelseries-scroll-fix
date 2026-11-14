@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "engine.h"
+#include "pairs.h"
 
 namespace fbw {
 
@@ -42,14 +43,6 @@ inline const char* testName(int id) {
     return (id > 0 && id < kTestCount) ? names[id] : "";
 }
 
-// A press that follows a release sooner than this was not made by a finger.
-// Clicking as fast as he could, the owner's hand got down to 49 ms between
-// release and press (196 presses, 2026-11-14), so the line sits well below
-// that. Only such presses count as the fault. Double clicks by hand are needed
-// in games and are never counted against the mouse.
-constexpr double kBuggedPressMs = 30;
-// Presses up to this long after a release are listed as double clicks by hand.
-constexpr double kByHandMs = 500;
 // A test ends this long after its last counted event, so a late bounce or a
 // tick from the wheel settling still lands inside the test.
 constexpr double kTestTailMs = 600;
@@ -202,7 +195,7 @@ public:
         run_.guarded = guarded;
         run_.target = target;
         run_.startedT = run_.lastT = now;
-        for (int b = 0; b < kButtons; ++b) testUp_[b] = -1;
+        for (int b = 0; b < kButtons; ++b) { testUp_[b] = -1; testDown_[b] = -1; testHold_[b] = -1; suspectGap_[b] = -1; }
         if (log_) fprintf(log_, "# test %s start t_ms=%.3f target=%d guarded=%d\n", testName(id), now, target, guarded ? 1 : 0);
         return true;
     }
@@ -408,18 +401,15 @@ private:
                 }
                 if (delivered && r.down) {
                     const double gap = testUp_[b] >= 0 ? r.t - testUp_[b] : -1;
-                    if (gap >= 0 && gap < kBuggedPressMs) {
-                        ++run_.wrong;
-                        ++run_.wrongBy[b];
-                        if (run_.wrongGaps.size() < 500) run_.wrongGaps.push_back(static_cast<float>(gap));
-                    } else {
-                        ++run_.good;
-                        ++run_.goodBy[b];
-                        if (gap >= 0 && gap < kByHandMs) ++run_.fast;
-                        if (gap >= 0 && (run_.fastest < 0 || gap < run_.fastest)) run_.fastest = static_cast<float>(gap);
-                    }
+                    settlePress(b, -1);                 // a press with no release seen in between: judged without its hold
+                    if (gap >= 0 && gap < kSuspectGapMs) suspectGap_[b] = gap;      // judged when it is released
+                    else countPress(b, gap, false);
+                    testDown_[b] = r.t;
                     run_.lastT = r.t;
                 } else if (delivered && !r.down) {
+                    const double hold = testDown_[b] >= 0 ? r.t - testDown_[b] : -1;
+                    settlePress(b, hold);
+                    testHold_[b] = hold;
                     testUp_[b] = r.t;
                 }
             }
@@ -464,7 +454,31 @@ private:
         if ((dropped || turned) && run_.active && run_.id != kTestClicks) ++run_.caught;
     }
 
+    // Counts one press of a clicks test.
+    void countPress(int b, double gap, bool bugged) {
+        if (bugged) {
+            ++run_.wrong;
+            ++run_.wrongBy[b];
+            if (run_.wrongGaps.size() < 500) run_.wrongGaps.push_back(static_cast<float>(gap));
+            return;
+        }
+        ++run_.good;
+        ++run_.goodBy[b];
+        if (gap >= 0 && gap < kByHandMs) ++run_.fast;
+        if (gap >= 0 && (run_.fastest < 0 || gap < run_.fastest)) run_.fastest = static_cast<float>(gap);
+    }
+
+    // A press that came soon after a release waits for its own release before
+    // it is counted, because how long it lasted is part of the verdict.
+    void settlePress(int b, double hold) {
+        if (suspectGap_[b] < 0) return;
+        const double gap = suspectGap_[b];
+        suspectGap_[b] = -1;
+        countPress(b, gap, buggedPair(gap, testHold_[b], hold));
+    }
+
     void finish(double now) {
+        for (int b = 0; b < kButtons; ++b) settlePress(b, -1);     // still held down when the test ended
         run_.active = false;
         testTick_ = -1;
         if (log_) {
@@ -717,6 +731,9 @@ private:
     TestRun run_;
     std::vector<TestRun> runs_;
     double testUp_[kButtons] = {-1, -1, -1, -1, -1};
+    double testDown_[kButtons] = {-1, -1, -1, -1, -1};
+    double testHold_[kButtons] = {-1, -1, -1, -1, -1};       // how long the click before lasted
+    double suspectGap_[kButtons] = {-1, -1, -1, -1, -1};     // a press waiting for its release to be judged
     double testTick_ = -1;
 };
 

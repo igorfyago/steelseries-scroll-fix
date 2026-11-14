@@ -14,6 +14,7 @@
 
 #include "filter.h"       // both found through /I, so the mutation check can swap either
 #include "whichmouse.h"
+#include "pairs.h"
 
 using namespace fbw;
 
@@ -678,6 +679,18 @@ static void directChecks() {
             m.seen(2, kLeftDown, 300);
             check(m.match(kLeftDown, 300.1, &how) == 2 && how == kDevExact, "old records make room for new ones");
         }
+    }
+    // which pairs of clicks count against the mouse
+    {
+        check(!buggedPair(30.0, 104.1, 79.9), "the fastest pair recorded from a hand (30 ms apart, long presses) is not a fault");
+        check(!buggedPair(49.0, 97.0, 100.0) && !buggedPair(35.0, 105.0, 104.0), "nor are other fast pairs by hand");
+        check(buggedPair(5.0, 40.0, 3.0), "a re-fire 5 ms after release is");
+        check(buggedPair(9.9, 80.0, 80.0) && !buggedPair(10.0, 80.0, 80.0), "a gap under 10 ms is a fault whatever the presses look like, 10 ms is not");
+        check(buggedPair(25.0, 80.0, 19.9) && !buggedPair(25.0, 80.0, 20.0), "a second press under 20 ms marks the pair, 20 ms does not");
+        check(buggedPair(25.0, 3.0, 300.0), "so does a first press under 20 ms (the switch bounced on the way down)");
+        check(!buggedPair(60.0, 3.0, 3.0) && !buggedPair(200.0, 80.0, 5.0), "pairs 60 ms or more apart are not looked at");
+        check(!buggedPair(25.0, -1, -1) && buggedPair(5.0, -1, -1), "with the press lengths unknown only the gap can speak");
+        check(!buggedPair(-1, 3.0, 3.0), "no gap, no pair");
     }
     // coarse clock veto, wheel
     {
