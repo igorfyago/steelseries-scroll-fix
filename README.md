@@ -47,9 +47,9 @@ To switch the guard off: the Guard box on the page, the tray menu, **Ctrl+Alt+Sh
 
 ## What it does not touch
 
-- **Input from other programs.** Macros from SteelSeries GG, Logitech G HUB, remote desktop tools: injected input is recorded but never judged.
+- **Input from other programs.** Anything a program injects (remote desktop tools, AutoHotkey, macro software that plays its macros that way) is recorded but never judged. Macros that a mouse or its driver plays by itself look exactly like the mouse, so the same rules apply to them: they are only touched if they click again within 20 ms or turn the wheel round within 70 ms.
 - **Other mice.** Only the mouse you pick is judged. Raw input names the device of every click and tick, and the program looks that up for each event.
-- **Anything in doubt.** It fails open: if the hook was late, the mouse could not be told, or the guard was just switched off, events pass as they came. The worst case is the mouse as it is without the program, never a button stuck down.
+- **Anything in doubt.** It fails open: if the hook was late, the mouse could not be told, or the guard was just switched off, events pass as they came. With the default settings no button release is ever held back, so no button can get stuck.
 
 ## Privacy
 
