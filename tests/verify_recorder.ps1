@@ -50,6 +50,10 @@ function Expect([string]$What, $Run, [int]$Good, [int]$Wrong, [int]$Caught) {
     '{0}  {1,-34} counted {2,3} wrong {3} dropped {4}   (want {5} / {6} / {7}){8}' -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $What, $Run.good, $Run.wrong, $Run.caught, $Good, $Wrong, $Caught, $gaps
 }
 
+# A settings file from the start, so the copy under test does not take this
+# for a first run and open its page in the browser.
+New-Item -ItemType Directory -Force -Path $data | Out-Null
+Set-Content -LiteralPath (Join-Path $data 'config.json') -Value '{"enabled": false}'
 $proc = Start-Process -FilePath (Join-Path $build 'fly-by-wire.exe') -PassThru -ArgumentList @('--count-injected', '--port', $port, '--data', "`"$data`"", '--web', "`"$(Join-Path $root 'web')`"")
 try {
     $up = $false

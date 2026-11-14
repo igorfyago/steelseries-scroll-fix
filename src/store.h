@@ -542,8 +542,12 @@ private:
 
         const std::wstring path = dataDir_ + L"\\benchmarks.jsonl";
         FILE* f = nullptr;
-        if (_wfopen_s(&f, path.c_str(), L"ab") == 0 && f) {
-            std::string line = "\n";       // if the line before was cut short, this one still starts on its own
+        if (_wfopen_s(&f, path.c_str(), L"ab+") == 0 && f) {
+            // If the line before was cut short (a crash mid write), this one
+            // still starts on a line of its own.
+            std::string line;
+            if (fseek(f, -1, SEEK_END) == 0 && fgetc(f) != '\n') line = "\n";
+            fseek(f, 0, SEEK_END);         // a read was the last operation: position before writing
             testJson(line, run_, run_.lastT);
             line += "\n";
             fwrite(line.data(), 1, line.size(), f);
