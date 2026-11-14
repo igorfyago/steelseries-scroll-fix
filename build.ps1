@@ -40,7 +40,7 @@ function Invoke-Vc([string]$What, [string[]]$Lines) {
 
 if ($Only -in 'all', 'tests') {
     Invoke-Vc 'rule tests: compile' @(
-        "$cl /I`"$SrcDir`" `"$root\tests\filter_tests.cpp`" /Fe:filter_tests.exe /Fo:filter_tests.obj"
+        "$cl /I`"$SrcDir`" /I`"$root\src`" `"$root\tests\filter_tests.cpp`" /Fe:filter_tests.exe /Fo:filter_tests.obj"
     )
     Write-Host '== rule tests: run'
     & (Join-Path $OutDir 'filter_tests.exe') (Join-Path $root 'tests\cases.txt')
@@ -58,7 +58,7 @@ if ($Only -in 'all', 'selftest') {
 if ($Only -in 'all', 'app') {
     Invoke-Vc 'program: compile' @(
         "rc /nologo /fo fly-by-wire.res `"$SrcDir\fly-by-wire.rc`"",
-        "$cl /I`"$SrcDir`" `"$SrcDir\main.cpp`" fly-by-wire.res /Fe:fly-by-wire.exe /Fo:main.obj /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib ws2_32.lib gdi32.lib advapi32.lib hid.lib"
+        "$cl /I`"$SrcDir`" `"$SrcDir\main.cpp`" fly-by-wire.res /Fe:fly-by-wire.exe /Fo:main.obj /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib ws2_32.lib gdi32.lib advapi32.lib cfgmgr32.lib"
     )
 }
 

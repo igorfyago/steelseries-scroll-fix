@@ -36,7 +36,7 @@ using namespace fbw;
 namespace {
 
 // The same definitions the recorder uses for its guided tests (store.h).
-constexpr double kBuggedPressMs = 50;
+constexpr double kBuggedPressMs = 30;
 constexpr double kTestLeadMs = 350;
 
 struct Ev {
@@ -130,6 +130,9 @@ bool readFile(const char* path, std::vector<Segment>* segments) {
             lastTest = testName;
         }
         if (atoi(source) != 0 || (k != 0 && k != 1)) continue;
+        // Known to be another mouse: not part of what the rules are about. An
+        // event whose mouse was not recognised stays in.
+        if (get("device") && get("judged") && atoi(get("device")) != 0 && atoi(get("judged")) == 0) continue;
         Ev e;
         e.t = atof(t);
         e.wheel = k == 1;

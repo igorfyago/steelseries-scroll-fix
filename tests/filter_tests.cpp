@@ -12,7 +12,8 @@
 #include <string>
 #include <vector>
 
-#include "filter.h"   // found through /I, so the mutation check can swap it
+#include "filter.h"       // both found through /I, so the mutation check can swap either
+#include "whichmouse.h"
 
 using namespace fbw;
 
@@ -599,6 +600,84 @@ static void directChecks() {
         const Outcome next = f.wheel(-120, 95);
         check(next.block && next.verdict == Verdict::WheelHeld,
               "the stroke goes on from the time the mouse sent that tick: a tick against it 65 ms later is still judged as part of it");
+    }
+    // which mouse: a hook event is matched to the raw record of the same event
+    {
+        const uint16_t kWheelFlag = 0x0400, kLeftDown = 0x0001, kLeftUp = 0x0002;
+        uint8_t how = 0;
+        {
+            MouseMatcher m;
+            m.seen(1, kWheelFlag, 100);
+            check(m.match(kWheelFlag, 100.5, &how) == 1 && how == kDevExact, "an event is matched to the raw record that carries the same change");
+        }
+        {
+            // What bit on 2026-11-14: the guard sends a tick itself, that leaves a
+            // raw record with no device, and the next real tick must not take it.
+            MouseMatcher m;
+            m.seen(1, kWheelFlag, 100);
+            check(m.match(kWheelFlag, 100.1, &how) == 1, "first real tick");
+            m.seen(0, kWheelFlag, 101);                 // the guard's own tick
+            m.seen(1, kWheelFlag, 106);
+            check(m.match(kWheelFlag, 106.1, &how) == 1 && how == kDevExact, "a raw record with no device is never matched to a real event");
+            m.seen(0, kWheelFlag, 107);
+            m.seen(0, kWheelFlag, 107.1);
+            m.seen(1, kWheelFlag, 112);
+            m.seen(1, kWheelFlag, 118);
+            check(m.match(kWheelFlag, 112.1, &how) == 1 && how == kDevExact, "nor are two of them in a row");
+            check(m.match(kWheelFlag, 118.1, &how) == 1 && how == kDevExact, "and the real records stay in step with their events");
+        }
+        {
+            MouseMatcher m;
+            m.seen(0, kWheelFlag, 100);
+            check(m.match(kWheelFlag, 100.1, &how) == 0 && how == kDevUnknown, "with only device-less records nothing is known");
+        }
+        {
+            MouseMatcher m;
+            m.seen(1, kWheelFlag, 100);
+            m.seen(2, kWheelFlag, 101);
+            check(m.match(kWheelFlag, 101.5, &how) == 1, "the oldest matching record is used first");
+            check(m.match(kWheelFlag, 101.6, &how) == 2, "then the next");
+        }
+        {
+            MouseMatcher m;
+            m.seen(1, kWheelFlag, 100);
+            m.seen(2, kLeftDown, 101);
+            check(m.match(kLeftDown, 101.2, &how) == 2 && how == kDevExact, "two mice at once: the click goes to the mouse that clicked");
+            check(m.match(kWheelFlag, 101.3, &how) == 1 && how == kDevExact, "and the wheel tick to the mouse that scrolled");
+        }
+        {
+            MouseMatcher m;
+            m.seen(3, static_cast<uint16_t>(kLeftDown | kLeftUp), 100);     // one record, two changes
+            check(m.match(kLeftDown, 100.1, &how) == 3 && how == kDevExact, "a record with two changes serves the first");
+            check(m.match(kLeftUp, 100.2, &how) == 3 && how == kDevExact, "and the second");
+            check(m.match(kLeftUp, 100.3, &how) == 3 && how == kDevLastActive, "but each only once: after that it is the mouse that was last active");
+        }
+        {
+            MouseMatcher m;
+            m.seen(1, kWheelFlag, 100);
+            check(m.match(kWheelFlag, 100 + kRawFreshMs, &how) == 1 && how == kDevExact, "a record is fresh up to the limit");
+            m.seen(1, kWheelFlag, 1000);
+            check(m.match(kWheelFlag, 1000 + kRawFreshMs + 1, &how) == 1 && how == kDevLastActive, "a stale record is not matched: the last active mouse is used instead");
+        }
+        {
+            MouseMatcher m;
+            m.seen(2, 0, 100);                          // movement only
+            check(m.match(kLeftDown, 150, &how) == 2 && how == kDevLastActive, "no record for the click: the mouse that just moved");
+            check(m.match(kLeftDown, 100 + kLastMouseMs, &how) == 2, "up to the limit");
+            check(m.match(kLeftDown, 100 + kLastMouseMs + 1, &how) == 0 && how == kDevUnknown, "and after that nothing is known");
+        }
+        {
+            MouseMatcher m;
+            m.seen(1, 0, 100);
+            m.seen(0, 0, 200);                          // injected movement
+            check(m.match(kLeftDown, 250, &how) == 1 && how == kDevLastActive, "injected movement does not become the last active mouse");
+        }
+        {
+            MouseMatcher m;
+            for (int i = 0; i < 100; ++i) m.seen(1, kWheelFlag, 100 + i);          // far more than it keeps
+            m.seen(2, kLeftDown, 300);
+            check(m.match(kLeftDown, 300.1, &how) == 2 && how == kDevExact, "old records make room for new ones");
+        }
     }
     // coarse clock veto, wheel
     {

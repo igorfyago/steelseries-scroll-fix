@@ -23,6 +23,7 @@
 #include "store.h"
 
 #include <shellapi.h>
+#include <cfgmgr32.h>
 
 #include <cmath>
 #include <map>
@@ -30,10 +31,6 @@
 #include <string>
 
 using namespace fbw;
-
-// From hid.dll: what a HID device calls itself. Declared here because the SDK
-// header for it drags in driver types this program has no other use for.
-extern "C" BOOLEAN __stdcall HidD_GetProductString(HANDLE device, PVOID buffer, ULONG bufferLength);
 
 namespace {
 
@@ -464,19 +461,36 @@ HttpResponse handle(const HttpRequest& req, void*) {
     return res;
 }
 
-// What a mouse calls itself, for example "SteelSeries Rival 500". Empty when
-// the device does not say.
+// What a mouse calls itself, for example "SteelSeries Rival 500 Gaming Mouse".
+// The mouse part of a device has no name of its own ("HID-compliant mouse");
+// the name the device reported when it was plugged in sits one or two levels
+// up in the device tree. Empty when nothing there has one.
 std::string productName(const Device& d) {
+    // DEVPKEY_Device_BusReportedDeviceDesc
+    static const DEVPROPKEY kBusName = {{0x540b947e, 0x8b40, 0x45bc, {0xa8, 0xa2, 0x6a, 0x0b, 0x89, 0x4c, 0xbd, 0xa2}}, 4};
     std::string out;
-    if (!d.path[0]) return out;
-    const HANDLE h = CreateFileW(d.path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return out;
-    wchar_t name[127] = {};
-    if (HidD_GetProductString(h, name, sizeof(name))) {
-        name[126] = 0;
-        for (const wchar_t* c = name; *c; ++c) out += (*c >= 32 && *c < 127) ? static_cast<char>(*c) : '?';
+    // "\\?\HID#VID_1038&PID_170E&MI_01&Col01#7&2dd21065&0&0000#{...}" names the
+    // device "HID\VID_1038&PID_170E&MI_01&Col01\7&2dd21065&0&0000".
+    std::wstring id = d.path;
+    if (id.rfind(L"\\\\?\\", 0) == 0) id.erase(0, 4);
+    const size_t brace = id.rfind(L"#{");
+    if (brace == std::wstring::npos) return out;
+    id.resize(brace);
+    for (wchar_t& c : id) if (c == L'#') c = L'\\';
+    DEVINST node = 0;
+    if (CM_Locate_DevNodeW(&node, &id[0], CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return out;
+    for (int up = 0; up < 3 && out.empty(); ++up) {
+        DEVINST parent = 0;
+        if (CM_Get_Parent(&parent, node, 0) != CR_SUCCESS) break;
+        node = parent;
+        wchar_t name[200] = {};
+        ULONG size = sizeof(name) - sizeof(wchar_t);
+        DEVPROPTYPE type = 0;
+        if (CM_Get_DevNode_PropertyW(node, &kBusName, &type, reinterpret_cast<PBYTE>(name), &size, 0) == CR_SUCCESS &&
+            type == DEVPROP_TYPE_STRING) {
+            for (const wchar_t* c = name; *c; ++c) out += (*c >= 32 && *c < 127) ? static_cast<char>(*c) : '?';
+        }
     }
-    CloseHandle(h);
     return out;
 }
 

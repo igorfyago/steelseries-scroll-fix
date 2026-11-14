@@ -78,15 +78,16 @@ enum class Settled : uint8_t {
     None = 0,
     ReleaseEmitted,      // C2: the held release was sent late
     ReleaseBridged,      // C2: the held release was cancelled by a re-press
-    WheelConfirmed,      // the held tick was sent late: the next tick agreed with it
+    WheelConfirmed,      // W1: a tick against the stroke was sent late: the next tick agreed, the turn was real
     WheelDropped,        // the held tick was dropped
     WheelFlipped,        // the held tick was sent turned round: the next tick showed it was misread
     WheelLate,           // W2: nothing followed the first tick, so it was sent as it came
+    WheelStarted,        // W2: the second tick agreed with the first, which was then sent
 };
 
 struct Config {
     bool   clickGuard = true;
-    double bounceMs[kButtons] = {30, 30, 30, 30, 30};   // 0 switches C1 off for that button
+    double bounceMs[kButtons] = {30, 30, 30, 30, 30};   // 0 switches C1 off for that button. The owner's own hand goes down to 49 ms.
     double holdMs[kButtons] = {0, 0, 0, 0, 0};          // 0 switches C2 off for that button
     bool   wheelGuard = true;
     double reverseMs = 70;      // W1: a turn this soon after the last tick is suspect
@@ -216,7 +217,7 @@ public:
         if (held_ == Held::First) {
             if (dir == sign(heldDelta_)) {
                 held_ = Held::None;
-                o.settled = Settled::WheelConfirmed;
+                o.settled = Settled::WheelStarted;
                 send(&o, heldDelta_);
                 accept(dir, t, sys);
                 return o;

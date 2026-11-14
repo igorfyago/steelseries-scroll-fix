@@ -58,7 +58,7 @@ $mutants = @(
     @{ name = 'W2 a lone first tick is never sent';   find = 'if (held_ == Held::First && t >= heldAt_ + cfg_.firstMs) {'; put = 'if (false) {' },
     @{ name = 'W2 first tick window is exclusive';    find = 'if (held_ == Held::First && t >= heldAt_ + cfg_.firstMs) {'; put = 'if (held_ == Held::First && t > heldAt_ + cfg_.firstMs) {' },
     @{ name = 'W2 the stroke counts from the late delivery'; find = 'accept(sign(heldDelta_), heldAt_, heldSys_);'; put = 'accept(sign(heldDelta_), heldAt_ + cfg_.firstMs, heldSys_);' },
-    @{ name = 'W2 an agreeing second tick does not release the first'; find = "                held_ = Held::None;$nl                o.settled = Settled::WheelConfirmed;$nl                send(&o, heldDelta_);$nl                accept(dir, t, sys);"; put = "                held_ = Held::None;$nl                o.settled = Settled::WheelConfirmed;$nl                accept(dir, t, sys);" },
+    @{ name = 'W2 an agreeing second tick does not release the first'; find = "                held_ = Held::None;$nl                o.settled = Settled::WheelStarted;$nl                send(&o, heldDelta_);$nl                accept(dir, t, sys);"; put = "                held_ = Held::None;$nl                o.settled = Settled::WheelStarted;$nl                accept(dir, t, sys);" },
     @{ name = 'W2 the second of a disagreeing pair is let through'; find = "            o.block = true;$nl            o.verdict = Verdict::WheelFirst;$nl            return o;$nl        }$nl        if (held_ == Held::Pair) {"; put = "            o.block = false;$nl            o.verdict = Verdict::WheelFirst;$nl            return o;$nl        }$nl        if (held_ == Held::Pair) {" },
     @{ name = 'W2 the third tick blames the wrong one of the pair'; find = 'const int right = dir == sign(heldDelta_) ? heldDelta_ : heldDelta2_;'; put = 'const int right = dir == sign(heldDelta_) ? heldDelta2_ : heldDelta_;' },
     @{ name = 'W2 the third tick sends only one of the pair'; find = "            send(&o, right);$nl            settleMisread(&o, wrong);"; put = "            settleMisread(&o, wrong);" },
@@ -79,25 +79,43 @@ $mutants = @(
     @{ name = 'veto breaks when the coarse clock wraps'; find = 'static_cast<double>(static_cast<uint32_t>(to.ms - from.ms)) >= ms'; put = '(static_cast<double>(to.ms) - static_cast<double>(from.ms)) >= ms' },
 
     # housekeeping
-    @{ name = 'busy() forgets hidden presses';        find = 'if (btn_[b].pendingUp || btn_[b].swallow) return true;'; put = 'if (btn_[b].pendingUp) return true;' }
+    @{ name = 'busy() forgets hidden presses';        find = 'if (btn_[b].pendingUp || btn_[b].swallow) return true;'; put = 'if (btn_[b].pendingUp) return true;' },
+
+    # which mouse (whichmouse.h)
+    @{ file = 'whichmouse.h'; name = 'a raw record with no device is kept';          find = '        if (!device) return;'; put = '' },
+    @{ file = 'whichmouse.h'; name = 'the newest matching record is used first';     find = 'if (best < 0 || s.t < slots_[best].t) best = i;'; put = 'if (best < 0 || s.t > slots_[best].t) best = i;' },
+    @{ file = 'whichmouse.h'; name = 'a used record can be used again';              find = 'slots_[best].flags = static_cast<uint16_t>(slots_[best].flags & ~flag);'; put = '' },
+    @{ file = 'whichmouse.h'; name = 'a stale record is still matched';              find = 'if (!(s.flags & flag) || now - s.t > kRawFreshMs) continue;'; put = 'if (!(s.flags & flag)) continue;' },
+    @{ file = 'whichmouse.h'; name = 'the last active mouse never expires';          find = 'if (last_ && now - lastAt_ <= kLastMouseMs) {'; put = 'if (last_) {' },
+    @{ file = 'whichmouse.h'; name = 'movement does not make a mouse the last active one'; find = "        last_ = device;$nl        lastAt_ = t;$nl        if (!flags) return;"; put = "        if (!flags) return;$nl        last_ = device;$nl        lastAt_ = t;" },
+    @{ file = 'whichmouse.h'; name = 'a match by last activity is reported as exact'; find = '            *how = kDevLastActive;'; put = '            *how = kDevExact;' }
     # Not here on purpose: breaking the range check on the button number. The
     # broken copy then reads and writes outside the array, and what happens
     # next depends on what the compiler put there, so a test cannot promise to
     # notice it. The hook only ever passes numbers 0 to 4.
 )
 
-$original = [IO.File]::ReadAllText((Join-Path $src 'filter.h'))
-if ($original -notmatch "`r`n") { $original = $original -replace "`n", "`r`n" }
+# Each entry breaks filter.h unless it names another file. The broken copy sits
+# alone in its folder, which is searched before the real sources.
+$originals = @{}
+foreach ($name in 'filter.h', 'whichmouse.h') {
+    $text = [IO.File]::ReadAllText((Join-Path $src $name))
+    if ($text -notmatch "`r`n") { $text = $text -replace "`n", "`r`n" }
+    $originals[$name] = $text
+}
 
 $survived = @()
 $i = 0
 foreach ($m in $mutants) {
     $i++
+    $file = if ($m.file) { $m.file } else { 'filter.h' }
+    $original = $originals[$file]
     $count = ([regex]::Matches($original, [regex]::Escape($m.find))).Count
-    if ($count -ne 1) { throw "mutant '$($m.name)': the text to break occurs $count times, expected exactly 1" }
+    if ($count -ne 1) { throw "mutant '$($m.name)': the text to break occurs $count times in $file, expected exactly 1" }
     $dir = Join-Path $work "m$i"
+    if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    [IO.File]::WriteAllText((Join-Path $dir 'filter.h'), $original.Replace($m.find, $m.put))
+    [IO.File]::WriteAllText((Join-Path $dir $file), $original.Replace($m.find, $m.put))
     $caught = $false
     try {
         & (Join-Path $root 'build.ps1') -Only tests -SrcDir $dir -OutDir (Join-Path $dir 'out') *> (Join-Path $dir 'log.txt')

@@ -42,12 +42,12 @@ inline const char* testName(int id) {
     return (id > 0 && id < kTestCount) ? names[id] : "";
 }
 
-// A press that follows a release sooner than this was not made by a finger:
-// the fastest deliberate double click recorded from the owner's hand left
-// 66 ms between release and press, and fast clickers in general stay above
-// 35. Only such presses count as the fault. Double clicks by hand are needed
+// A press that follows a release sooner than this was not made by a finger.
+// Clicking as fast as he could, the owner's hand got down to 49 ms between
+// release and press (196 presses, 2026-11-14), so the line sits well below
+// that. Only such presses count as the fault. Double clicks by hand are needed
 // in games and are never counted against the mouse.
-constexpr double kBuggedPressMs = 50;
+constexpr double kBuggedPressMs = 30;
 // Presses up to this long after a release are listed as double clicks by hand.
 constexpr double kByHandMs = 500;
 // A test ends this long after its last counted event, so a late bounce or a
@@ -68,6 +68,7 @@ struct TestRun {
     int    good = 0;                 // clicks: presses a finger made. scroll: ticks in the asked direction
     int    wrong = 0;                // clicks: presses no finger made. scroll: ticks the other way
     int    fast = 0;                 // clicks: of the good ones, double clicks by hand
+    float  fastest = -1;             // clicks: the shortest release to press gap a finger made, ms
     int    caught = 0;               // faults the guard removed
     double startedT = 0, lastT = 0;
     int    goodBy[kButtons] = {};
@@ -99,6 +100,7 @@ struct Counters {
     uint64_t ticksTurned = 0;
     uint64_t otherPrograms = 0;
     uint64_t otherMice = 0;
+    uint64_t unknownMouse = 0;       // not judged because the mouse could not be told
 };
 
 class Store {
@@ -175,9 +177,10 @@ public:
         DeviceRow row;
         row.vid = d.vid;
         row.pid = d.pid;
-        // Both end up in JSON and in the page, so only plain characters are kept.
+        // The name ends up in JSON and in the page, so only plain characters are
+        // kept. The path only goes into the recording, as Windows wrote it.
         for (char c : name) row.name += plain(c) ? c : ' ';
-        for (const wchar_t* c = d.path; *c; ++c) row.path += (*c < 127 && plain(static_cast<char>(*c))) ? static_cast<char>(*c) : '?';
+        for (const wchar_t* c = d.path; *c; ++c) row.path += (*c >= 32 && *c < 127) ? static_cast<char>(*c) : '?';
         if (static_cast<int>(devices_.size()) < number) devices_.resize(static_cast<size_t>(number));
         devices_[static_cast<size_t>(number - 1)] = row;
         if (log_) fprintf(log_, "# device %d vid=%04X pid=%04X name=%s path=%s\n", number, d.vid, d.pid, row.name.c_str(), row.path.c_str());
@@ -283,6 +286,7 @@ public:
         num(j, "ticksTurned", static_cast<double>(counters_.ticksTurned));
         num(j, "otherPrograms", static_cast<double>(counters_.otherPrograms));
         num(j, "otherMice", static_cast<double>(counters_.otherMice));
+        num(j, "unknownMouse", static_cast<double>(counters_.unknownMouse));
         endObj(j);
 
         j += "\"hook\":{";
@@ -360,8 +364,13 @@ private:
         const Rec& r = it.r;
         if (r.source == kOtherProgram) { ++counters_.otherPrograms; return; }
         if (r.source == kHardware && r.device >= 1 && static_cast<size_t>(r.device) <= devices_.size()) ++devices_[static_cast<size_t>(r.device) - 1].events;
-        // Another mouse: recorded, but it is not what the counts and the tests are about.
-        if (r.source == kHardware && r.kind != kSettled && !r.judged) { ++counters_.otherMice; return; }
+        // Known to be another mouse: recorded, but not what the counts and the
+        // tests are about. An event whose mouse could not be told is different:
+        // it went past the rules, so it stays in the counts where a fault in it shows.
+        if (r.source == kHardware && r.kind != kSettled && !r.judged) {
+            if (r.device) { ++counters_.otherMice; return; }
+            ++counters_.unknownMouse;
+        }
 
         if (r.kind == kSettled) {
             countWheelOutcome(r.settled);
@@ -407,6 +416,7 @@ private:
                         ++run_.good;
                         ++run_.goodBy[b];
                         if (gap >= 0 && gap < kByHandMs) ++run_.fast;
+                        if (gap >= 0 && (run_.fastest < 0 || gap < run_.fastest)) run_.fastest = static_cast<float>(gap);
                     }
                     run_.lastT = r.t;
                 } else if (delivered && !r.down) {
@@ -605,6 +615,7 @@ private:
         t->good = static_cast<int>(numberOf(line, "good"));
         t->wrong = static_cast<int>(numberOf(line, "wrong"));
         t->fast = static_cast<int>(numberOf(line, "fast"));
+        t->fastest = valueOf(line, "fastest") ? static_cast<float>(numberOf(line, "fastest")) : -1;
         t->caught = static_cast<int>(numberOf(line, "caught"));
         t->startedT = 0;
         t->lastT = numberOf(line, "seconds") * 1000.0;
@@ -666,6 +677,7 @@ private:
         num(j, "good", t.good);
         num(j, "wrong", t.wrong);
         num(j, "fast", t.fast);
+        num(j, "fastest", t.fastest, 1);
         num(j, "caught", t.caught);
         num(j, "seconds", ((t.active ? now : t.lastT) - t.startedT) / 1000.0, 1);
         arr(j, "goodBy", t.goodBy, kButtons);

@@ -41,6 +41,7 @@
 
 #include "filter.h"
 #include "ring.h"
+#include "whichmouse.h"
 
 namespace fbw {
 
@@ -56,16 +57,9 @@ constexpr double kStallMs = 100;
 constexpr int kLateMs = 250;
 // Own time above this is counted, so the page can show the hook stays fast.
 constexpr double kSlowMs = 2;
-// The raw record of an event is in the queue before the hook is called for
-// it. One older than this belongs to an event the hook never saw.
-constexpr double kRawFreshMs = 200;
-// If no raw record matches, the event is put down to the mouse that last sent
-// anything, as long as that was this recent. One hand, one mouse at a time.
-constexpr double kLastMouseMs = 500;
 
 enum RecKind : uint8_t { kButton = 0, kWheel = 1, kHWheel = 2, kSettled = 3 };
 enum RecSource : uint8_t { kHardware = 0, kOtherProgram = 1, kOurs = 2 };
-enum DeviceHow : uint8_t { kDevUnknown = 0, kDevExact = 1, kDevLastActive = 2 };
 
 struct Rec {
     double   t = 0;           // ms since the engine started, read when the callback began
@@ -190,10 +184,8 @@ public:
 private:
     struct Pending { Config rules; bool enabled = false; uint16_t vid = 0, pid = 0; };
     struct Slot { HANDLE handle = nullptr; Device info; };
-    struct RawSeen { uint8_t device = 0; USHORT flags = 0; double t = 0; };
     static constexpr UINT kMsgWake = WM_APP + 1;
     static constexpr UINT kMsgRehook = WM_APP + 2;
-    static constexpr int kRawKeep = 32;
 
     static DWORD WINAPI hookEntry(void* p) { return static_cast<Engine*>(p)->hookLoop(); }
     static DWORD WINAPI emitEntry(void* p) { return static_cast<Engine*>(p)->emitLoop(); }
@@ -345,8 +337,9 @@ private:
         return static_cast<uint8_t>(n + 1);
     }
 
-    // Reads every raw mouse record queued for this thread and remembers the
-    // ones that carry a button or wheel change.
+    // Reads every raw mouse record queued for this thread and hands it to the
+    // matcher. A record with no device (injected input, our own ticks among
+    // it) gets the number 0 there, and the matcher leaves those out.
     void drainRaw() {
         if (!rawInput.load(std::memory_order_relaxed)) return;
         for (;;) {
@@ -357,15 +350,7 @@ private:
             const RAWINPUT* ri = reinterpret_cast<const RAWINPUT*>(rawBuf_);
             for (UINT i = 0; i < n; ++i) {
                 if (ri->header.dwType == RIM_TYPEMOUSE) {
-                    const uint8_t dev = deviceNumber(ri->header.hDevice);
-                    if (dev) { lastMouse_ = dev; lastMouseAt_ = now; }
-                    if (ri->data.mouse.usButtonFlags) {
-                        RawSeen& slot = rawSeen_[rawNext_];
-                        rawNext_ = (rawNext_ + 1) % kRawKeep;
-                        slot.device = dev;
-                        slot.flags = ri->data.mouse.usButtonFlags;
-                        slot.t = now;
-                    }
+                    matcher_.seen(deviceNumber(ri->header.hDevice), ri->data.mouse.usButtonFlags, now);
                 }
                 // next record: each one is padded to a multiple of 8 bytes
                 ri = reinterpret_cast<const RAWINPUT*>((reinterpret_cast<ULONG_PTR>(ri) + ri->header.dwSize + 7) & ~static_cast<ULONG_PTR>(7));
@@ -373,27 +358,10 @@ private:
         }
     }
 
-    // Finds the mouse an event came from: the oldest fresh raw record that
-    // carries the same change, else the mouse that was last active.
+    // Finds the mouse an event came from (see whichmouse.h).
     uint8_t whichMouse(USHORT rawFlag, double now, uint8_t* how) {
         drainRaw();
-        int best = -1;
-        for (int i = 0; i < kRawKeep; ++i) {
-            const RawSeen& s = rawSeen_[i];
-            if (!(s.flags & rawFlag) || now - s.t > kRawFreshMs) continue;
-            if (best < 0 || s.t < rawSeen_[best].t) best = i;
-        }
-        if (best >= 0) {
-            rawSeen_[best].flags = static_cast<USHORT>(rawSeen_[best].flags & ~rawFlag);
-            *how = rawSeen_[best].device ? kDevExact : kDevUnknown;
-            return rawSeen_[best].device;
-        }
-        if (lastMouse_ && now - lastMouseAt_ <= kLastMouseMs) {
-            *how = kDevLastActive;
-            return lastMouse_;
-        }
-        *how = kDevUnknown;
-        return 0;
+        return matcher_.match(rawFlag, now, how);
     }
 
     bool guarded(uint8_t device) const {
@@ -644,10 +612,7 @@ private:
     bool   enabled_ = false;
     uint16_t scopeVid_ = 0, scopePid_ = 0;
     HWND   rawWindow_ = nullptr;
-    RawSeen rawSeen_[kRawKeep];
-    int     rawNext_ = 0;
-    uint8_t lastMouse_ = 0;
-    double  lastMouseAt_ = 0;
+    MouseMatcher matcher_;
     alignas(8) BYTE rawBuf_[16 * 1024];
 
     Ring<Rec, 4096> records_;

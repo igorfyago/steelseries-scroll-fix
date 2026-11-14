@@ -94,8 +94,9 @@
         <h2>Clicks</h2>
         <div class="muted">Click as you normally do. Double clicks by hand are fine.</div>
         <div class="big"><span class="good-n">0</span> <small>/ 100</small></div>
-        <div class="stat"><span>Bugged double clicks, under 50 ms</span><b class="wrong-n">0</b></div>
+        <div class="stat"><span>Bugged double clicks, under 30 ms</span><b class="wrong-n">0</b></div>
         <div class="stat"><span>Double clicks by hand</span><b class="fast-n">0</b></div>
+        <div class="stat"><span>Fastest by hand, ms</span><b class="fastest-n"></b></div>
         <div class="stat"><span>Dropped by guard</span><b class="caught-n">0</b></div>
         <div class="row end"><button class="primary start">Start</button><button class="ghost stop hidden">Stop</button></div>
       </div>
@@ -157,6 +158,7 @@
         <div class="stat"><span>Ticks dropped</span><b id="c-revdrop">0</b></div>
         <div class="stat"><span>Real turns let through</span><b id="c-revok">0</b></div>
         <div class="stat"><span>Events from other mice</span><b id="c-mice">0</b></div>
+        <div class="stat"><span>Not judged, mouse not recognised</span><b id="c-unknown">0</b></div>
         <div class="stat"><span>Events from other programs</span><b id="c-other">0</b></div>
         <div class="row end"><button class="ghost" id="reset">Clear counts</button></div>
       </div>
@@ -271,6 +273,8 @@
       var good = t ? t.good : 0, wrong = t ? t.wrong : 0, caught = t ? t.caught : 0;
       var fast = card.querySelector('.fast-n');
       if (fast) fast.textContent = t ? (t.fast || 0) : 0;
+      var fastest = card.querySelector('.fastest-n');
+      if (fastest) fastest.textContent = t && t.fastest >= 0 ? t.fastest.toFixed(0) : '';
       card.querySelector('.good-n').textContent = good;
       var w = card.querySelector('.wrong-n');
       w.textContent = wrong;
@@ -342,6 +346,8 @@
     $('c-revdrop').textContent = c.reversalsDropped;
     $('c-revok').textContent = c.reversalsConfirmed;
     $('c-mice').textContent = c.otherMice;
+    $('c-unknown').textContent = c.unknownMouse;
+    $('c-unknown').classList.toggle('bad', c.unknownMouse > 0);
     $('c-other').textContent = c.otherPrograms;
   }
 
@@ -411,6 +417,7 @@
   // not decided yet. Violet: sent by the guard itself. Dim: another mouse or
   // another program, not judged. No colour: passed.
   function eventClass(e) {
+    if (e.src === 0 && e.k !== 3 && !e.j && !e.dev) return 'dropped';     // went past the rules: its mouse was not recognised
     if (e.src === 1 || (e.src === 0 && e.k !== 3 && !e.j)) return 'other';
     if (e.src === 2) return 'sent';
     if (e.x && (e.v === 3 || isHeldTick(e))) {
@@ -448,7 +455,7 @@
       var e = rows[i];
       html += '<tr class="' + eventClass(e) + '"><td>' + e.s + '</td><td>' + (e.t / 1000).toFixed(3) + '</td><td>' +
               eventText(e) + '</td><td>' + (e.g >= 0 ? e.g.toFixed(1) : '') + '</td><td>' +
-              (e.src === 1 ? 'another program' : e.src === 2 ? 'guard' : e.dev ? deviceName(e.dev) : '') + '</td></tr>';
+              (e.src === 1 ? 'another program' : e.src === 2 ? 'guard' : e.dev ? deviceName(e.dev) : e.k === 3 ? '' : 'not recognised') + '</td></tr>';
     }
     $('events').innerHTML = html;
   }
