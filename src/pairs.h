@@ -5,7 +5,8 @@
 // little as 30 ms between release and press, and double clicks by hand are
 // needed in games, so they must never be counted as the fault. What a finger
 // does not do is hold the button for under 20 ms (the shortest of 600 clicks
-// was 40) or press again within 10 ms of letting go. A switch that fires by
+// was 40) or press again within 20 ms of letting go (the default re-press
+// window of the guard, chosen for the same reason). A switch that fires by
 // itself does both. So a pair is bugged when its gap is under
 // kImpossibleGapMs, or when one of its two presses lasted under kBlipMs. Only
 // pairs closer than kSuspectGapMs are looked at.
@@ -14,7 +15,7 @@
 namespace fbw {
 
 constexpr double kSuspectGapMs = 60;
-constexpr double kImpossibleGapMs = 10;
+constexpr double kImpossibleGapMs = 20;
 constexpr double kBlipMs = 20;
 // Presses up to this long after a release are listed as double clicks by hand.
 constexpr double kByHandMs = 500;

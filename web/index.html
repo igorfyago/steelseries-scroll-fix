@@ -141,14 +141,19 @@
         <div class="muted" style="margin-bottom:6px">Bridges a brief opening during a hold. 0 is off.</div>
         <div class="field"><span>Left, ms</span><input type="number" min="0" max="50" step="1" data-key="holdLeft"></div>
         <div class="field"><span>Right, ms</span><input type="number" min="0" max="50" step="1" data-key="holdRight"></div>
+        <div class="field"><span>Press bounce window, ms (0 is off)</span><input type="number" min="0" max="30" step="1" data-key="blipMs"></div>
         <div class="muted hidden" id="hotkey" style="margin-top:14px">Ctrl+Alt+Shift+F11 switches the guard off.</div>
       </div>
       <div class="card">
         <h2>Wheel</h2>
         <div class="field"><span>Catch ticks that go the wrong way</span><input type="checkbox" data-key="wheelGuard"></div>
+        <div class="field"><span>Send corrected ticks</span><input type="checkbox" data-key="wheelResend"></div>
+        <div class="muted" style="margin-bottom:6px">Off: wrong ticks are dropped and nothing is sent. On: they are turned round and the first tick of a stroke is checked too, but programs that read raw input (some games) then get some ticks twice.</div>
         <div class="field"><span>Turn them round (off: drop them)</span><input type="checkbox" data-key="wheelFlip"></div>
         <div class="field"><span>Reversal window, ms</span><input type="number" min="0" max="600" step="5" data-key="reverseMs"></div>
         <div class="field"><span>Confirm window, ms</span><input type="number" min="20" max="500" step="5" data-key="confirmMs"></div>
+        <div class="field"><span>Turn wait, ms (0 is off)</span><input type="number" min="0" max="5000" step="50" data-key="turnMs"></div>
+        <div class="muted" style="margin-bottom:6px">The last direction is remembered. A later tick against it waits this long for a second one the same way; with none, it is dropped.</div>
         <div class="field"><span>First tick wait, ms (0 is off)</span><input type="number" min="0" max="150" step="5" data-key="firstMs"></div>
         <h2 style="margin-top:18px">Counts</h2>
         <div class="stat"><span>Presses, left / right / other</span><b id="c-presses">0</b></div>
@@ -160,6 +165,7 @@
         <div class="stat"><span>Real turns let through</span><b id="c-revok">0</b></div>
         <div class="stat"><span>Events from other mice</span><b id="c-mice">0</b></div>
         <div class="stat"><span>Not judged, mouse not recognised</span><b id="c-unknown">0</b></div>
+        <div class="stat"><span>Not judged, callback too late</span><b id="c-late">0</b></div>
         <div class="stat"><span>Events from other programs</span><b id="c-other">0</b></div>
         <div class="row end"><button class="ghost" id="reset">Clear counts</button></div>
       </div>
@@ -357,6 +363,11 @@
     $('c-revok').textContent = c.reversalsConfirmed;
     $('c-mice').textContent = c.otherMice;
     $('c-unknown').textContent = c.unknownMouse;
+    $('c-late').textContent = c.lateEvents;
+    ['wheelFlip', 'firstMs'].forEach(function (k) {
+      var el = document.querySelector('[data-key="' + k + '"]');
+      if (el) el.disabled = !state.config.wheelResend;
+    });
     $('c-unknown').classList.toggle('bad', c.unknownMouse > 0);
     $('c-other').textContent = c.otherPrograms;
   }

@@ -25,6 +25,11 @@ namespace {
 HWND g_hwnd = nullptr;
 const char* g_mode = "";
 int g_n = 0, g_every = 0, g_faults = 0;
+// The fault pattern is only as good as the timing it was sent with. Another
+// program's mouse hook, or the scheduler, can hold a SendInput call up. Each
+// fault's real spacing is measured here, and any that is far off is reported,
+// so the recorder check can tell a slip of this tool from a fault of the program.
+double g_worstSlip = 0;
 LARGE_INTEGER g_freq, g_origin;
 
 double nowMs() {
@@ -75,8 +80,11 @@ DWORD WINAPI driver(void*) {
         for (int i = 1; i <= g_n; ++i) {
             waitUntil(t);       send(MOUSEEVENTF_LEFTDOWN);
             waitUntil(t + 40);  send(MOUSEEVENTF_LEFTUP);
+            const double up = nowMs();
             if (g_every > 0 && i % g_every == 0) {
                 waitUntil(t + 45);  send(MOUSEEVENTF_LEFTDOWN);
+                const double gap = nowMs() - up;          // meant to be 5 ms
+                if (gap - 5 > g_worstSlip) g_worstSlip = gap - 5;
                 waitUntil(t + 48);  send(MOUSEEVENTF_LEFTUP);
                 ++g_faults;
             }
@@ -87,9 +95,12 @@ DWORD WINAPI driver(void*) {
         for (int i = 1; i <= g_n; ++i) {
             waitUntil(t);
             send(MOUSEEVENTF_WHEEL, dir);
+            const double tick = nowMs();
             if (g_every > 0 && i % g_every == 0 && i < g_n) {
                 waitUntil(t + 20);
                 send(MOUSEEVENTF_WHEEL, -dir);
+                const double gap = nowMs() - tick;        // meant to be 20 ms
+                if (gap - 20 > g_worstSlip) g_worstSlip = gap - 20;
                 ++g_faults;
             }
             t += 40;
@@ -152,6 +163,7 @@ int main(int argc, char** argv) {
     CloseHandle(thread);
     if (previous) SetForegroundWindow(previous);
     timeEndPeriod(1);
-    printf("sent %s: %d with %d fault(s)\n", g_mode, g_n, g_faults);
+    printf("sent %s: %d with %d fault(s), worst timing slip %.1f ms\n", g_mode, g_n, g_faults, g_worstSlip);
+    if (g_worstSlip > 10) printf("slipped\n");
     return 0;
 }

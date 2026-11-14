@@ -217,6 +217,7 @@ private:
         // swapped in Windows settings that path is untested, so it stays off.
         if (!enabled_ || GetSystemMetrics(SM_SWAPBUTTON)) {
             for (double& h : c.holdMs) h = 0;
+            c.blipMs = 0;
         }
         filter_.configure(c);
     }
@@ -240,6 +241,15 @@ private:
     // rules are applied to fresh input again.
     void letGo() {
         flushHeldThen([this] { filter_.forgetHidden(); });
+    }
+
+    // A press that is not judged (another mouse, another program). If its
+    // callback began so late that Windows has delivered it already, a release
+    // still held for that button is stale: forget it. Otherwise send it first,
+    // so applications never see the new press before it.
+    void pressFromElsewhere(int button, int32_t lag) {
+        if (lag >= kLateMs) filter_.cancelRelease(button);
+        else releaseBefore(button);
     }
 
     // Something that is not judged is about to press a button whose release
@@ -325,6 +335,17 @@ private:
         if (rawWindow_) { DestroyWindow(rawWindow_); rawWindow_ = nullptr; }
     }
 
+    static const wchar_t* findText(const wchar_t* text, const wchar_t* key) {
+        const size_t n = wcslen(key);
+        for (const wchar_t* p = text; *p; ++p) if (_wcsnicmp(p, key, n) == 0) return p;
+        return nullptr;
+    }
+    static int hexDigits(const wchar_t* p) {
+        int n = 0;
+        while ((p[n] >= L'0' && p[n] <= L'9') || (p[n] >= L'a' && p[n] <= L'f') || (p[n] >= L'A' && p[n] <= L'F')) ++n;
+        return n;
+    }
+
     static uint16_t hexAfter(const wchar_t* path, const wchar_t* key) {
         const wchar_t* p = path;
         const size_t n = wcslen(key);
@@ -373,6 +394,13 @@ private:
         wcscpy_s(s.info.path, path);
         s.info.vid = hexAfter(s.info.path, L"VID_");
         s.info.pid = hexAfter(s.info.path, L"PID_");
+        if (!s.info.vid && !s.info.pid) {
+            // Bluetooth names them "..._VID&0002046d_PID&b01a...": eight digits
+            // for the vendor, of which the last four are the id.
+            const wchar_t* v = findText(s.info.path, L"VID&");
+            if (v && hexDigits(v + 4) >= 8) s.info.vid = hexAfter(v + 8, L"");
+            s.info.pid = hexAfter(s.info.path, L"PID&");
+        }
         deviceCount_.store(n + 1, std::memory_order_release);
         return static_cast<uint8_t>(n + 1);
     }
@@ -567,7 +595,7 @@ private:
         const bool asHardware = !injected || e->treatInjectedAsReal;
         if (!asHardware) {
             r.source = kOtherProgram;
-            if (r.kind == kButton && down) e->releaseBefore(button);
+            if (r.kind == kButton && down) e->pressFromElsewhere(button, r.lag);
             e->push(r);
             return CallNextHookEx(nullptr, code, wp, lp);
         }
@@ -581,7 +609,7 @@ private:
             mine = e->guarded(r.device);
         }
         if (!mine || r.kind == kHWheel) {
-            if (r.kind == kButton && down) e->releaseBefore(button);
+            if (r.kind == kButton && down) e->pressFromElsewhere(button, r.lag);
             e->push(r);
             return CallNextHookEx(nullptr, code, wp, lp);
         }

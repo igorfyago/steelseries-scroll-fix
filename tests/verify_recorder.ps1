@@ -34,8 +34,25 @@ function Send-Post([string]$Path, $Body) {
 }
 
 function Invoke-Test([string]$Name, [int]$Target, [int]$Every) {
-    Send-Post '/api/test' @{ action = 'start'; test = $Name; target = $Target }
-    & (Join-Path $build 'inject.exe') $Name $Target $Every | Out-Null
+    # The scripted mouse reports when its own timing slipped (another program's
+    # hook or the scheduler held it up); such a run says nothing about the
+    # recorder, so it is done once more.
+    foreach ($try in 1, 2) {
+        Start-Sleep -Milliseconds 600       # a fresh start, apart from the run before
+        Send-Post '/api/test' @{ action = 'start'; test = $Name; target = $Target }
+        $sent = & (Join-Path $build 'inject.exe') $Name $Target $Every | Out-String
+        if ($sent -notmatch 'slipped' -or $try -eq 2) { break }
+        "  (the scripted mouse slipped: $($sent.Trim() -replace "`r?`n", ' '); once more)" | Out-Host
+        # The slipped run is still recorded: count it in what the checks at the end expect.
+        $script:retries++
+        if ($sent -match 'sent \w+: (\d+) with (\d+) fault') {
+            $events = [int]$Matches[1] + [int]$Matches[2]
+            $script:extraEvents += $(if ($Name -eq 'clicks') { 2 * $events } else { $events })
+        }
+        $deadline = (Get-Date).AddSeconds(8)
+        do { Start-Sleep -Milliseconds 200; $s = Get-State } while ($s.test.active -and (Get-Date) -lt $deadline)
+        if ($s.test.active) { Send-Post '/api/test' @{ action = 'stop' } }
+    }
     $deadline = (Get-Date).AddSeconds(8)
     do { Start-Sleep -Milliseconds 200; $s = Get-State } while ($s.test.active -and (Get-Date) -lt $deadline)
     if ($s.test.active) { Send-Post '/api/test' @{ action = 'stop' }; $s = Get-State }
@@ -43,6 +60,8 @@ function Invoke-Test([string]$Name, [int]$Target, [int]$Every) {
 }
 
 $failed = 0
+$retries = 0
+$extraEvents = 0
 function Expect([string]$What, $Run, [int]$Good, [int]$Wrong, [int]$Caught) {
     $ok = $Run.good -eq $Good -and $Run.wrong -eq $Wrong -and $Run.caught -eq $Caught
     if (-not $ok) { $script:failed++ }
@@ -65,19 +84,24 @@ try {
     Expect 'guard off: 40 up, 3 reversed'     (Invoke-Test 'up' 40 10)    40 3 0
     Expect 'guard off: 40 down, 3 reversed'   (Invoke-Test 'down' 40 10)  40 3 0
 
-    # Wheel rule with its extras off: a stray tick is dropped.
-    Send-Post '/api/config' @{ enabled = $true; clickGuard = $true; bounceLeft = 40; holdLeft = 0; wheelGuard = $true; wheelFlip = $false; firstMs = 0; reverseMs = 150; confirmMs = 200 }
+    # Wheel rule with its extras off: a stray tick is dropped. The direction is
+    # remembered, and each run goes the other way from the one before, so its
+    # first tick waits for its second; with nothing sent, that first notch is lost.
+    Send-Post '/api/config' @{ enabled = $true; clickGuard = $true; bounceLeft = 40; holdLeft = 0; blipMs = 0; wheelGuard = $true; wheelResend = $false; wheelFlip = $false; firstMs = 0; reverseMs = 150; confirmMs = 200; turnMs = 1000 }
     Expect 'guard on:  20 clicks, 4 re-fire'  (Invoke-Test 'clicks' 20 5) 20 0 4
-    Expect 'dropping:  40 up, 3 reversed'     (Invoke-Test 'up' 40 10)    40 0 3
-    Expect 'dropping:  40 down, 3 reversed'   (Invoke-Test 'down' 40 10)  40 0 3
+    Expect 'dropping:  40 up, 3 reversed'     (Invoke-Test 'up' 40 10)    39 0 3
+    Expect 'dropping:  40 down, 3 reversed'   (Invoke-Test 'down' 40 10)  39 0 3
 
-    # Wheel rule as fitted to the Rival 500: a stray tick is turned round, so it counts as a good one.
-    Send-Post '/api/config' @{ wheelFlip = $true; firstMs = 40; reverseMs = 70; confirmMs = 50 }
+    # Wheel rule as fitted to the Rival 500: a stray tick is turned round, so it
+    # counts as a good one, and the first tick of each run is sent once its second agrees.
+    Send-Post '/api/config' @{ wheelResend = $true; wheelFlip = $true; firstMs = 40; reverseMs = 70; confirmMs = 200; turnMs = 1000 }
     Expect 'turning:   40 up, 3 reversed'     (Invoke-Test 'up' 40 10)    43 0 3
     Expect 'turning:   40 down, 3 reversed'   (Invoke-Test 'down' 40 10)  43 0 3
 
     # A bounced click on Start must not restart the test, and one that lands on
-    # Stop right after must not end it.
+    # Stop right after must not end it. (First a pause: a start right after a
+    # test ended by itself is ignored too, which is checked further down.)
+    Start-Sleep -Milliseconds 600
     Send-Post '/api/test' @{ action = 'start'; test = 'up'; target = 5 }
     Start-Sleep -Milliseconds 300
     Send-Post '/api/test' @{ action = 'start'; test = 'up'; target = 5 }
@@ -114,11 +138,12 @@ try {
     $log = @(Get-Content (Get-ChildItem $data -Filter 'events-*.csv').FullName)
     $bench = @(Get-Content (Join-Path $data 'benchmarks.jsonl'))
     'recording: {0} lines, benchmark records: {1}' -f $log.Count, $bench.Count
-    if ($bench.Count -ne 8) { $failed++; 'FAIL  expected 8 benchmark records' }
+    if ($retries) { "($retries run(s) done again after the scripted mouse slipped)" }
+    if ($bench.Count -ne 8 + $retries) { $failed++; "FAIL  expected $(8 + $retries) benchmark records" }
     $header = $log[0].Split(',')
     # 2 click runs of 20 clicks + 4 re-fires (2 events each) and 6 wheel runs of 40 + 3 ticks:
     # exactly that many rows must carry an event of the scripted mouse.
-    $sent = 2 * (20 + 4) * 2 + 6 * (40 + 3)
+    $sent = 2 * (20 + 4) * 2 + 6 * (40 + 3) + $extraEvents
     $sourceIndex = [array]::IndexOf($header, 'source')
     $kindIndex = [array]::IndexOf($header, 'kind')
     $mouseRows = @($log | Where-Object { $_ -match '^\d' } | ForEach-Object { , $_.Split(',') } | Where-Object { $_[$sourceIndex] -eq '0' -and $_[$kindIndex] -ne '3' })
@@ -136,9 +161,9 @@ try {
     $up = $false
     for ($i = 0; $i -lt 30 -and -not $up; $i++) { Start-Sleep -Milliseconds 200; try { $s = Get-State; $up = $true } catch {} }
     if (-not $up) { $failed++; 'FAIL  did not come back after a restart' }
-    elseif ($s.runs.Count -ne 8) { $failed++; "FAIL  after a restart the page shows $($s.runs.Count) runs, 8 were recorded" }
+    elseif ($s.runs.Count -ne 8 + $retries) { $failed++; "FAIL  after a restart the page shows $($s.runs.Count) runs, $(8 + $retries) were recorded" }
     elseif (($s.runs | ConvertTo-Json -Depth 6 -Compress) -ne $before) { $failed++; 'FAIL  a run came back from disk with other numbers' }
-    else { 'PASS  the 8 runs are shown after a restart, each with the same numbers' }
+    else { "PASS  the $(8 + $retries) runs are shown after a restart, each with the same numbers" }
 } catch {
     $failed++
     'FAIL  ' + $_.Exception.Message

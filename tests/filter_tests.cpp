@@ -89,6 +89,9 @@ static bool parseConfig(const std::string& text, Config* c, std::string* err) {
     c->wheelGuard = false;
     c->firstMs = 0;
     c->wheelFlip = false;
+    c->blipMs = 0;           // cases name it when they want it
+    c->turnMs = 0;           // the remembered direction too
+    c->wheelResend = true;   // the reference vectors send a confirmed turn's first notch
     std::stringstream ss(text);
     std::string kv;
     while (ss >> kv) {
@@ -112,8 +115,11 @@ static bool parseConfig(const std::string& text, Config* c, std::string* err) {
         else if (k == "wheel") c->wheelGuard = v != 0;
         else if (k == "reverse") c->reverseMs = v;
         else if (k == "confirm") c->confirmMs = v;
+        else if (k == "turn") c->turnMs = v;
         else if (k == "first") c->firstMs = v;
         else if (k == "flip") c->wheelFlip = v != 0;
+        else if (k == "blip") c->blipMs = v;
+        else if (k == "resend") c->wheelResend = v != 0;
         else { *err = "unknown config key: " + k; return false; }
     }
     return true;
@@ -155,6 +161,7 @@ static std::vector<Ev> play(const Config& cfg, const std::vector<Ev>& in) {
             Config off = cfg;
             off.clickGuard = false;
             for (double& h : off.holdMs) h = 0;
+            off.blipMs = 0;
             off.wheelGuard = false;
             off.firstMs = 0;
             f.configure(off);
@@ -266,6 +273,9 @@ static Config allOff() {
     c.wheelGuard = false;
     c.firstMs = 0;
     c.wheelFlip = false;
+    c.blipMs = 0;
+    c.turnMs = 0;
+    c.wheelResend = true;
     return c;
 }
 
@@ -685,7 +695,9 @@ static void directChecks() {
         check(!buggedPair(30.0, 104.1, 79.9), "the fastest pair recorded from a hand (30 ms apart, long presses) is not a fault");
         check(!buggedPair(49.0, 97.0, 100.0) && !buggedPair(35.0, 105.0, 104.0), "nor are other fast pairs by hand");
         check(buggedPair(5.0, 40.0, 3.0), "a re-fire 5 ms after release is");
-        check(buggedPair(9.9, 80.0, 80.0) && !buggedPair(10.0, 80.0, 80.0), "a gap under 10 ms is a fault whatever the presses look like, 10 ms is not");
+        check(buggedPair(19.9, 80.0, 80.0) && !buggedPair(20.0, 80.0, 80.0), "a gap under 20 ms is a fault whatever the presses look like, 20 ms is not");
+        check(buggedPair(50.0, 80.0, 15.0) && buggedPair(59.9, 80.0, 15.0) && !buggedPair(60.0, 80.0, 15.0), "a blip press marks a pair up to 60 ms apart, not beyond");
+        check(buggedPair(50.0, 15.0, 80.0) && buggedPair(50.0, 19.9, 80.0) && !buggedPair(50.0, 20.0, 80.0), "so does a blip as the first press, up to 20 ms");
         check(buggedPair(25.0, 80.0, 19.9) && !buggedPair(25.0, 80.0, 20.0), "a second press under 20 ms marks the pair, 20 ms does not");
         check(buggedPair(25.0, 3.0, 300.0), "so does a first press under 20 ms (the switch bounced on the way down)");
         check(!buggedPair(60.0, 3.0, 3.0) && !buggedPair(200.0, 80.0, 5.0), "pairs 60 ms or more apart are not looked at");
@@ -765,6 +777,205 @@ static void directChecks() {
             check(!f.busy(), "a held reversed tick is taken back too");
             const Outcome next = f.wheel(-120, 20);
             check(!next.block && !next.hasEmit, "and since it was let through, the stroke now runs its way");
+        }
+    }
+    // second review: behaviour earlier tests could not tell apart
+    {
+        Config c = allOff();
+        c.wheelGuard = true; c.reverseMs = 70; c.confirmMs = 50; c.firstMs = 40; c.wheelFlip = true;
+        Filter f;
+        f.configure(c);
+        Settled s = Settled::None;
+        Emit em;
+        bool has = false;
+        f.wheel(120, 0);
+        f.wheel(120, 8);
+        f.wheel(-120, 30);
+        check(f.tick(80, &s, &em, &has) && s == Settled::WheelFlipped, "a held tick that times out is turned round");
+        const Outcome o = f.wheel(-120, 110);
+        check(o.block && o.verdict == Verdict::WheelFirst, "the stroke counts from when the mouse sent that tick: 80 ms later a tick against it starts a new stroke");
+    }
+    {
+        Config c = allOff();
+        c.wheelGuard = true; c.firstMs = 40;
+        Filter f;
+        f.configure(c);
+        f.wheel(240, 0);
+        const Outcome o = f.wheel(120, 10);
+        check(o.hasEmit && o.emit.delta == 240 && !o.block, "a stroke opening +240, +120 sends the +240 with its own size");
+    }
+    {
+        Config c = allOff();
+        c.clickGuard = true;
+        for (double& b : c.bounceMs) b = 20;
+        Filter f;
+        f.configure(c);
+        f.button(Left, true, 0, at(1000));
+        f.button(Left, false, 60, at(1060));
+        const Outcome hidden = f.button(Left, true, 65, at(1065));
+        check(hidden.block, "a re-press 5 ms after release is hidden");
+        const Outcome vetoed = f.button(Left, true, 70, at(1100));
+        check(!vetoed.block && vetoed.vetoed, "a second press that the coarse clock puts 40 ms after the release passes");
+        const Outcome up = f.button(Left, false, 150, at(1150));
+        check(!up.block, "and its release is delivered: nothing of the hidden press is left over");
+    }
+    {
+        Config c = allOff();
+        c.wheelGuard = true; c.reverseMs = 150; c.confirmMs = 200;
+        Filter f;
+        f.configure(c);
+        f.wheel(120, 0);
+        f.wheel(-120, 50);
+        const Outcome o = f.wheel(-120, 90);
+        check(o.settled == Settled::WheelConfirmed && o.hasEmit && o.emit.delta == -120, "a real turn is reported as confirmed, and its first notch is sent");
+    }
+    {
+        Config c = allOff();
+        c.holdMs[Left] = 25;
+        Filter f;
+        f.configure(c);
+        f.button(Left, true, 0);
+        f.button(Left, false, 100);
+        const Outcome o = f.button(Left, true, 104);
+        check(o.block && o.verdict == Verdict::BridgedPress && o.settled == Settled::ReleaseBridged, "a re-press inside the hold is reported as bridged");
+    }
+    // keepSane: a confirm window shorter than the reversal window is pulled up
+    {
+        Config c;
+        c.reverseMs = 70; c.confirmMs = 50;
+        keepSane(&c);
+        check(c.confirmMs == 70, "a confirm window under the reversal window is raised to it");
+        c.confirmMs = 90;
+        keepSane(&c);
+        check(c.confirmMs == 90, "a longer one is left alone");
+        c.turnMs = 60;
+        keepSane(&c);
+        check(c.turnMs == 90, "a turn wait under the confirm window is raised to it");
+        c.turnMs = 0;
+        keepSane(&c);
+        check(c.turnMs == 0, "a turn wait of 0 (no direction remembered) stays 0");
+    }
+    // the remembered direction: what is held, and how long
+    {
+        Config c = allOff();
+        c.wheelGuard = true; c.reverseMs = 70; c.confirmMs = 200; c.turnMs = 1000; c.firstMs = 40; c.wheelFlip = true;
+        Filter f;
+        f.configure(c);
+        check(f.remembered() == 0, "no direction before the first tick");
+        Settled s = Settled::None;
+        Emit em;
+        bool has = false;
+        f.wheel(120, 0);
+        f.wheel(120, 10);
+        check(f.remembered() == 1, "the direction of the stroke is remembered");
+        const Outcome fast = f.wheel(-120, 30);
+        check(fast.block && fast.verdict == Verdict::WheelHeld && f.nextDeadline() == 230, "a tick too soon after the stroke waits confirmMs");
+        check(f.tick(230, &s, &em, &has) && has && em.delta == 120 && s == Settled::WheelFlipped, "then it is turned round");
+        const Outcome slow = f.wheel(-120, 5000);
+        check(slow.block && slow.verdict == Verdict::WheelHeld && f.nextDeadline() == 6000, "a tick against it after a long pause waits turnMs");
+        const Outcome pair = f.wheel(120, 5100);
+        check(pair.block && pair.verdict == Verdict::WheelFirst && f.nextDeadline() == 5300, "the old way next: both wait confirmMs for a third tick");
+        f.takeBackTick();
+        check(f.busy() && f.nextDeadline() == 6000, "taking back the second of them leaves the first held as before");
+        check(f.tick(6000, &s, &em, &has) && !has && s == Settled::WheelDropped, "with nothing more it is dropped, not turned round");
+        check(f.remembered() == 1, "and the direction stays");
+        const Outcome again = f.wheel(-120, 7000);
+        check(again.block && again.verdict == Verdict::WheelFirst, "the next tick the same way counts as its second: the hand turned, this is a first tick of the new way");
+        check(f.remembered() == -1, "and the new direction is remembered");
+    }
+    // the coarse clock: a quick looking turn that was not quick is held as one a hand may have made
+    {
+        Config c = allOff();
+        c.wheelGuard = true; c.reverseMs = 70; c.confirmMs = 200; c.turnMs = 1000;
+        Filter f;
+        f.configure(c);
+        f.wheel(120, 0, at(1000));
+        const Outcome o = f.wheel(-120, 30, at(1100));
+        check(o.block && o.vetoed && f.nextDeadline() == 1030, "vetoed: held for turnMs, not confirmMs");
+    }
+    // without sending: nothing is ever sent for the wheel
+    {
+        Config c = allOff();
+        c.wheelGuard = true; c.reverseMs = 70; c.confirmMs = 70; c.firstMs = 40; c.wheelFlip = true; c.wheelResend = false;
+        Filter f;
+        f.configure(c);
+        Settled s = Settled::None;
+        Emit em;
+        bool has = false;
+        const Outcome first = f.wheel(120, 0);
+        check(!first.block, "without sending, the first tick of a stroke is not held");
+        f.wheel(120, 8);
+        const Outcome mis = f.wheel(-120, 12);
+        check(mis.block && mis.verdict == Verdict::WheelHeld, "a tick against the stroke is still held");
+        const Outcome next = f.wheel(120, 20);
+        check(!next.block && !next.hasEmit && next.settled == Settled::WheelDropped, "the misread is dropped and nothing is sent");
+        f.wheel(-120, 40);
+        const Outcome turn = f.wheel(-120, 50);
+        check(turn.settled == Settled::WheelConfirmed && !turn.hasEmit, "a real turn: its held first notch is dropped, nothing is sent");
+        f.wheel(120, 60);
+        check(f.tick(200, &s, &em, &has) && !has && s == Settled::WheelDropped, "a held tick that times out is dropped, not turned");
+    }
+    // the press bounce bridge
+    {
+        Config c = allOff();
+        c.clickGuard = true; c.blipMs = 20;
+        for (double& b : c.bounceMs) b = 20;
+        Filter f;
+        f.configure(c);
+        f.button(Left, true, 0);
+        const Outcome blipUp = f.button(Left, false, 3);
+        check(blipUp.block && blipUp.verdict == Verdict::HeldRelease && f.nextDeadline() == 23, "the release of a 3 ms press is held for the bounce window");
+        const Outcome re = f.button(Left, true, 7);
+        check(re.block && re.verdict == Verdict::BridgedPress, "a re-press inside it continues the same press");
+        const Outcome realUp = f.button(Left, false, 600);
+        check(!realUp.block, "the release of the real press is not held");
+        f.button(Left, true, 1000);
+        const Outcome up = f.button(Left, false, 1080);
+        check(!up.block, "the release of an 80 ms press passes at once");
+        f.button(Left, true, 2000);
+        const Outcome edge = f.button(Left, false, 2020);
+        check(!edge.block, "a press of exactly 20 ms is a finger's: not held");
+    }
+    // which mouse: arrival order, literal limits, movement, several waiting records
+    {
+        const uint16_t kWheelFlag = 0x0400, kLeftDown = 0x0001;
+        uint8_t how = 0;
+        {
+            MouseMatcher m;
+            for (int i = 0; i < 31; ++i) { m.seen(3, kLeftDown, i); m.match(kLeftDown, i + 0.1, &how); }
+            m.seen(1, kWheelFlag, 100);
+            m.seen(2, kWheelFlag, 100);
+            check(m.match(kWheelFlag, 100.1, &how) == 1, "records with the same time are matched in the order they arrived, across the wrap");
+            check(m.match(kWheelFlag, 100.2, &how) == 2, "and the next one after it");
+        }
+        {
+            MouseMatcher m;
+            m.seen(1, kWheelFlag, 100);
+            check(m.match(kWheelFlag, 300, &how) == 1 && how == kDevExact, "a record 200 ms old is still matched");
+            m.seen(1, kWheelFlag, 1000);
+            check(m.match(kWheelFlag, 1200.5, &how) == 1 && how == kDevLastActive, "one 200.5 ms old is not: the last active mouse is used");
+        }
+        {
+            MouseMatcher m;
+            m.seen(2, 0, 100);
+            check(m.match(kLeftDown, 600, &how) == 2 && how == kDevLastActive, "the mouse that moved 500 ms ago is still the last active one");
+            check(m.match(kLeftDown, 601, &how) == 0 && how == kDevUnknown, "501 ms ago it is not");
+        }
+        {
+            MouseMatcher m;
+            m.seen(2, kLeftDown, 100);
+            for (int i = 0; i < 40; ++i) m.seen(1, 0, 100.5 + i * 0.01);
+            check(m.match(kLeftDown, 101, &how) == 2 && how == kDevExact, "40 movement records after a click record leave it in place");
+        }
+        {
+            MouseMatcher m;
+            m.seen(1, kLeftDown, 100);
+            m.seen(2, kLeftDown, 100.1);
+            m.seen(3, kLeftDown, 100.2);
+            const uint8_t a = m.match(kLeftDown, 101, &how);
+            const uint8_t b = m.match(kLeftDown, 101, &how);
+            const uint8_t d = m.match(kLeftDown, 101, &how);
+            check(a == 1 && b == 2 && d == 3, "three waiting records are matched in order");
         }
     }
     // coarse clock veto, wheel

@@ -6,6 +6,7 @@
 // and what the filter did. Never recorded: cursor position, window titles,
 // keyboard input, mouse movement.
 #pragma once
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +28,7 @@ struct AppConfig {
     // The one mouse the guard and the tests are about, by USB vendor and
     // product id, chosen on the page. 0 and 0: every mouse, until one is chosen.
     uint16_t vid = 0, pid = 0;
+    int    keepDays = 14;       // recordings older than this are deleted; 0 keeps them all
 };
 
 // What the page shows about the program itself.
@@ -102,6 +104,7 @@ struct Counters {
     uint64_t otherPrograms = 0;
     uint64_t otherMice = 0;
     uint64_t unknownMouse = 0;       // not judged because the mouse could not be told
+    uint64_t lateEvents = 0;         // not judged because the callback began too late
 };
 
 class Store {
@@ -150,7 +153,10 @@ public:
     void poll(double now) {
         std::lock_guard<std::mutex> lock(mu_);
         lastNow_ = now;
-        if (run_.active && run_.good >= run_.target && now - run_.lastT >= kTestTailMs) finish(now);
+        if (run_.active && run_.good >= run_.target && now - run_.lastT >= kTestTailMs) {
+            stoppedT_ = now;          // the page swaps Stop for Start now too
+            finish(now);
+        }
         if (log_) fflush(log_);
         ++pollCount_;
         if (!log_ && pollCount_ % 50 == 0) openLog();           // the file could not be opened: keep trying
@@ -167,12 +173,14 @@ public:
         char buf[400];
         snprintf(buf, sizeof(buf),
                  "enabled=%d mouse=%04X:%04X click=%d bounce=%.0f/%.0f/%.0f/%.0f/%.0f hold=%.0f/%.0f/%.0f/%.0f/%.0f "
-                 "wheel=%d reverse=%.0f confirm=%.0f first=%.0f flip=%d",
+                 "blip=%.0f wheel=%d reverse=%.0f confirm=%.0f turn=%.0f first=%.0f flip=%d resend=%d",
                  c.enabled ? 1 : 0, c.vid, c.pid, c.rules.clickGuard ? 1 : 0, c.rules.bounceMs[0], c.rules.bounceMs[1],
                  c.rules.bounceMs[2], c.rules.bounceMs[3], c.rules.bounceMs[4], c.rules.holdMs[0], c.rules.holdMs[1],
-                 c.rules.holdMs[2], c.rules.holdMs[3], c.rules.holdMs[4], c.rules.wheelGuard ? 1 : 0,
-                 c.rules.reverseMs, c.rules.confirmMs, c.rules.firstMs, c.rules.wheelFlip ? 1 : 0);
+                 c.rules.holdMs[2], c.rules.holdMs[3], c.rules.holdMs[4], c.rules.blipMs, c.rules.wheelGuard ? 1 : 0,
+                 c.rules.reverseMs, c.rules.confirmMs, c.rules.turnMs, c.rules.firstMs, c.rules.wheelFlip ? 1 : 0,
+                 c.rules.wheelResend ? 1 : 0);
         configLine_ = buf;
+        keepDays_ = c.keepDays;
         if (log_) fprintf(log_, "# config t_ms=%.3f %s\n", now, configLine_.c_str());
     }
 
@@ -210,7 +218,7 @@ public:
         run_.guarded = guarded;
         run_.target = target;
         run_.startedT = run_.lastT = now;
-        for (int b = 0; b < kButtons; ++b) { testUp_[b] = -1; testDown_[b] = -1; testHold_[b] = -1; suspectGap_[b] = -1; suspectDropped_[b] = false; }
+        for (int b = 0; b < kButtons; ++b) { testUp_[b] = -1; testDown_[b] = -1; testHold_[b] = -1; suspectGap_[b] = -1; suspectDropped_[b] = false; testUpSysOk_[b] = false; }
         lastGoodT_ = -1;
         if (log_) fprintf(log_, "# test %s start t_ms=%.3f target=%d guarded=%d\n", testName(id), now, target, guarded ? 1 : 0);
         return true;
@@ -218,7 +226,11 @@ public:
 
     void stopTest(double now) {
         std::lock_guard<std::mutex> lock(mu_);
-        if (!run_.active || now - run_.startedT < kStopGuardMs) return;
+        if (!run_.active) {
+            stoppedT_ = now;          // the test ended by itself as Stop was clicked: a bounce lands on Start
+            return;
+        }
+        if (now - run_.startedT < kStopGuardMs) return;
         // The click on Stop was made with the mouse under test and has been
         // counted as a click of the test. Take it back.
         if (run_.id == kTestClicks && lastGoodT_ >= 0 && now - lastGoodT_ < kStopClickMs && run_.good > 0) {
@@ -290,8 +302,12 @@ public:
         num(j, "holdSide", cfg.rules.holdMs[X1]);
         boolean(j, "wheelGuard", cfg.rules.wheelGuard);
         boolean(j, "wheelFlip", cfg.rules.wheelFlip);
+        boolean(j, "wheelResend", cfg.rules.wheelResend);
+        num(j, "blipMs", cfg.rules.blipMs);
+        num(j, "keepDays", cfg.keepDays);
         num(j, "reverseMs", cfg.rules.reverseMs);
         num(j, "confirmMs", cfg.rules.confirmMs);
+        num(j, "turnMs", cfg.rules.turnMs);
         num(j, "firstMs", cfg.rules.firstMs);
         endObj(j);
 
@@ -306,6 +322,7 @@ public:
         num(j, "otherPrograms", static_cast<double>(counters_.otherPrograms));
         num(j, "otherMice", static_cast<double>(counters_.otherMice));
         num(j, "unknownMouse", static_cast<double>(counters_.unknownMouse));
+        num(j, "lateEvents", static_cast<double>(counters_.lateEvents));
         endObj(j);
 
         j += "\"hook\":{";
@@ -389,8 +406,9 @@ private:
         // (its mouse could not be told, or its callback ran too late to judge)
         // is different: it stays in the counts, where a fault in it shows.
         if (r.source == kHardware && r.kind != kSettled && !r.judged) {
-            if (r.device && !r.stalled) { ++counters_.otherMice; return; }
-            ++counters_.unknownMouse;
+            if (r.stalled) ++counters_.lateEvents;
+            else if (r.device) { ++counters_.otherMice; return; }
+            else ++counters_.unknownMouse;
         }
 
         if (r.kind == kSettled) {
@@ -430,7 +448,14 @@ private:
             // hand look like a fault.
             if (!ours && run_.active && run_.id == kTestClicks && r.t - run_.startedT >= kTestLeadMs) {
                 if (r.down) {
-                    const double gap = testUp_[b] >= 0 ? r.t - testUp_[b] : -1;
+                    double gap = testUp_[b] >= 0 ? r.t - testUp_[b] : -1;
+                    // Two late callbacks can make a long gap look short on the
+                    // fine clock. Windows' own stamps can tell: a gap they put
+                    // well above the suspect range is a hand's.
+                    if (gap >= 0 && gap < kSuspectGapMs && testUpSysOk_[b]) {
+                        const uint32_t coarse = r.sys - testUpSys_[b];
+                        if (coarse >= kSuspectGapMs + kCoarseStepMs && coarse < 60000u) gap = coarse;
+                    }
                     const bool dropped = r.blocked != 0;
                     settlePress(b, -1);                 // a press with no release seen in between: judged without its hold
                     if (gap >= 0 && gap < kSuspectGapMs) {
@@ -445,6 +470,8 @@ private:
                     const double hold = testDown_[b] >= 0 ? r.t - testDown_[b] : -1;
                     settlePress(b, hold);
                     testHold_[b] = hold;
+                    testUpSys_[b] = r.sys;
+                    testUpSysOk_[b] = true;
                     testUp_[b] = r.t;
                 }
             }
@@ -569,8 +596,33 @@ private:
         return (local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday;
     }
 
+    // Deletes recordings older than keepDays. Only files named events-YYYYMMDD*.csv
+    // right in the data folder: anything moved into a subfolder is kept.
+    void pruneOld() {
+        if (keepDays_ <= 0) return;
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((dataDir_ + L"\\events-*.csv").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        const time_t now = time(nullptr);
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            int y = 0, mo = 0, d = 0;
+            if (swscanf_s(fd.cFileName, L"events-%4d%2d%2d", &y, &mo, &d) != 3) continue;
+            tm when{};
+            when.tm_year = y - 1900;
+            when.tm_mon = mo - 1;
+            when.tm_mday = d;
+            when.tm_hour = 12;
+            const time_t t = mktime(&when);
+            if (t == static_cast<time_t>(-1)) continue;
+            if (difftime(now, t) > (keepDays_ + 0.5) * 86400.0) DeleteFileW((dataDir_ + L"\\" + fd.cFileName).c_str());
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+
     void openLog() {
         logDay_ = today();
+        pruneOld();
         wchar_t name[64];
         swprintf_s(name, L"\\events-%08d.csv", logDay_);
         const std::wstring path = dataDir_ + name;
@@ -659,9 +711,13 @@ private:
         const size_t p = line.find(needle);
         return p == std::string::npos ? nullptr : line.c_str() + p + needle.size();
     }
+    // A number from a line of benchmarks.jsonl. Anything that is not a finite
+    // number of a sane size reads as 0, so a damaged line cannot make the
+    // state the page reads invalid JSON.
     static double numberOf(const std::string& line, const char* key) {
         const char* v = valueOf(line, key);
-        return v ? strtod(v, nullptr) : 0;
+        const double d = v ? strtod(v, nullptr) : 0;
+        return std::isfinite(d) && d > -1e9 && d < 1e9 ? d : 0;
     }
     static std::string textOf(const std::string& line, const char* key) {
         const char* v = valueOf(line, key);
@@ -678,7 +734,7 @@ private:
             char* end = nullptr;
             const double d = strtod(v, &end);
             if (end == v) break;
-            fn(d);
+            if (std::isfinite(d) && d > -1e9 && d < 1e9) fn(d);
             v = end;
             if (*v == ',') ++v;
         }
@@ -711,6 +767,7 @@ private:
     // ---- json -------------------------------------------------------------
 
     static void num(std::string& j, const char* key, double v, int decimals = 0) {
+        if (!std::isfinite(v)) v = 0;
         char buf[96];
         snprintf(buf, sizeof(buf), "\"%s\":%.*f,", key, decimals, v);
         j += buf;
@@ -768,7 +825,7 @@ private:
         j += "\"wrongGaps\":[";
         for (size_t i = 0; i < t.wrongGaps.size(); ++i) {
             char buf[32];
-            snprintf(buf, sizeof(buf), "%s%.1f", i ? "," : "", t.wrongGaps[i]);
+            snprintf(buf, sizeof(buf), "%s%.1f", i ? "," : "", std::isfinite(t.wrongGaps[i]) ? t.wrongGaps[i] : 0.0f);
             j += buf;
         }
         j += "],\"finishedAt\":\"";
@@ -800,6 +857,9 @@ private:
     TestRun run_;
     std::vector<TestRun> runs_;
     double testUp_[kButtons] = {-1, -1, -1, -1, -1};
+    uint32_t testUpSys_[kButtons] = {};                       // Windows' stamp of that release
+    bool     testUpSysOk_[kButtons] = {};
+    int      keepDays_ = 14;
     double testDown_[kButtons] = {-1, -1, -1, -1, -1};
     double testHold_[kButtons] = {-1, -1, -1, -1, -1};       // how long the click before lasted
     double suspectGap_[kButtons] = {-1, -1, -1, -1, -1};     // a press waiting for its release to be judged

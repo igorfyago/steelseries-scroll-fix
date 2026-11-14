@@ -40,17 +40,19 @@ public:
         s.device = device;
         s.flags = flags;
         s.t = t;
+        s.seq = ++count_;
     }
 
     // The mouse behind a hook event that carries the change `flag`: the oldest
-    // fresh raw record with that change, which is then used up for it. Failing
+    // fresh raw record with that change, which is then used up for it. Oldest
+    // by arrival, not by time: records read in one go share one time. Failing
     // that, the mouse that was last active. Failing that, 0.
     uint8_t match(uint16_t flag, double now, uint8_t* how) {
         int best = -1;
         for (int i = 0; i < kKeep; ++i) {
             const Slot& s = slots_[i];
             if (!(s.flags & flag) || now - s.t > kRawFreshMs) continue;
-            if (best < 0 || s.t < slots_[best].t) best = i;
+            if (best < 0 || s.seq < slots_[best].seq) best = i;
         }
         if (best >= 0) {
             slots_[best].flags = static_cast<uint16_t>(slots_[best].flags & ~flag);
@@ -67,9 +69,10 @@ public:
 
 private:
     static constexpr int kKeep = 32;
-    struct Slot { uint8_t device = 0; uint16_t flags = 0; double t = 0; };
-    Slot    slots_[kKeep];
-    int     next_ = 0;
+    struct Slot { uint8_t device = 0; uint16_t flags = 0; double t = 0; uint64_t seq = 0; };
+    Slot     slots_[kKeep];
+    int      next_ = 0;
+    uint64_t count_ = 0;
     uint8_t last_ = 0;
     double  lastAt_ = 0;
 };

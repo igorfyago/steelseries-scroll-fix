@@ -4,20 +4,33 @@
 //
 //   replay.exe <events.csv> [more.csv ...] [options]
 //
+// Defaults are the program's own defaults (src/filter.h).
 //   --click 0|1        C1 on or off                      (default 1)
-//   --bounce N         C1 window for every button, ms    (default 30)
+//   --bounce N         C1 window for every button, ms    (default 20)
 //   --bounce-left N    --bounce-right N                  (one button)
 //   --hold-left N      --hold-right N   C2 hold, ms      (default 0, off)
+//   --blip N           press bounce window, ms, 0 is off (default 20)
 //   --wheel 0|1        wheel rules on or off             (default 1)
+//   --resend 0|1       send corrected wheel ticks        (default 0)
 //   --reverse N        reversal window, ms               (default 70)
-//   --confirm N        confirm window, ms                (default 50)
-//   --first N          first tick wait, ms, 0 is off     (default 40)
-//   --flip 0|1         turn a misread tick round, or drop it (default 1)
+//   --confirm N        confirm window, ms                (default 150, never below --reverse)
+//   --turn N           wait of a later tick against the remembered direction, ms;
+//                      0: no direction is remembered     (default 1000, never below --confirm)
+//   --first N          first tick wait, ms, 0 is off     (default 40, only with --resend 1)
+//   --flip 0|1         turn a misread tick round, or drop it (default 1, only with --resend 1)
 //   --list             print every event the rules would drop or hold
 //   --sweep            print what each C1 window from 5 to 80 ms would drop
 //
 // Only what the mouse itself sent is replayed. Events other programs injected
 // and events the guard sent during the recording are left out.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -82,12 +95,15 @@ std::vector<std::string> split(const std::string& line) {
     return out;
 }
 
-bool readFile(const char* path, std::vector<Segment>* segments) {
-    std::ifstream in(path);
-    if (!in) { printf("cannot open %s\n", path); return false; }
+// Run numbers go on across files, so runs from two recordings are never merged.
+std::map<std::string, int> g_runCount;
+
+bool readFile(const std::wstring& path, std::vector<Segment>* segments) {
+    std::ifstream in(path);       // a wide path: folders in any language open
+    if (!in) { printf("cannot open %ls\n", path.c_str()); return false; }
     std::map<std::string, int> col;
     std::string line;
-    std::map<std::string, int> runCount;
+    std::map<std::string, int>& runCount = g_runCount;
     std::string lastTest;
     double leadUntil = -1;
     segments->push_back(Segment{});
@@ -191,11 +207,23 @@ void play(const Config& cfg, const Segment& seg, std::vector<Out>* out, std::vec
                 heldRelease[em.button] = nullptr;
                 continue;
             }
-            const Ev* oldest = heldTicks.empty() ? nullptr : heldTicks.front();
-            if (has) out->push_back(tagged(em, d, oldest));
-            if (oldest && s == Settled::WheelFlipped) dropped->push_back(Dropped{oldest, Verdict::WheelFirst, -1, -1, -1});
-            if (oldest && s == Settled::WheelDropped) dropped->push_back(Dropped{oldest, Verdict::WheelHeld, -1, -1, -1});
-            if (oldest) heldTicks.erase(heldTicks.begin());
+            // Which held tick this was about. With two held, a tick sent as it
+            // came is the one its own way, a turned one the other, and a
+            // dropped one the one against the direction the rules remember.
+            size_t which = 0;
+            if (heldTicks.size() > 1) {
+                int want = 0;
+                if (has) want = (em.delta > 0 ? 1 : -1) * (s == Settled::WheelFlipped ? -1 : 1);
+                else if (s == Settled::WheelDropped) want = -f.remembered();
+                for (size_t i = 0; i < heldTicks.size() && want != 0; ++i) {
+                    if ((heldTicks[i]->delta > 0 ? 1 : -1) == want) { which = i; break; }
+                }
+            }
+            const Ev* src = heldTicks.empty() ? nullptr : heldTicks[which];
+            if (has) out->push_back(tagged(em, d, src));
+            if (src && s == Settled::WheelFlipped) dropped->push_back(Dropped{src, Verdict::WheelFirst, -1, -1, -1});
+            if (src && s == Settled::WheelDropped) dropped->push_back(Dropped{src, Verdict::WheelHeld, -1, -1, -1});
+            if (src) heldTicks.erase(heldTicks.begin() + static_cast<std::ptrdiff_t>(which));
         }
     };
     for (const Ev& e : seg.events) {
@@ -304,39 +332,44 @@ std::map<std::string, RunCount> countTests(const Stream& stream) {
     return runs;
 }
 
-double arg(int argc, char** argv, int* i) { return *i + 1 < argc ? atof(argv[++*i]) : 0; }
+double arg(const std::vector<std::wstring>& args, size_t* i) { return *i + 1 < args.size() ? _wtof(args[++*i].c_str()) : 0; }
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int wmain(int argc, wchar_t** argv) {
     Config cfg;
     bool list = false, sweep = false;
-    std::vector<const char*> files;
-    for (int i = 1; i < argc; ++i) {
-        const std::string a = argv[i];
-        if (a == "--click") cfg.clickGuard = arg(argc, argv, &i) != 0;
-        else if (a == "--bounce") { const double v = arg(argc, argv, &i); for (double& b : cfg.bounceMs) b = v; }
-        else if (a == "--bounce-left") cfg.bounceMs[Left] = arg(argc, argv, &i);
-        else if (a == "--bounce-right") cfg.bounceMs[Right] = arg(argc, argv, &i);
-        else if (a == "--hold-left") cfg.holdMs[Left] = arg(argc, argv, &i);
-        else if (a == "--hold-right") cfg.holdMs[Right] = arg(argc, argv, &i);
-        else if (a == "--wheel") cfg.wheelGuard = arg(argc, argv, &i) != 0;
-        else if (a == "--reverse") cfg.reverseMs = arg(argc, argv, &i);
-        else if (a == "--confirm") cfg.confirmMs = arg(argc, argv, &i);
-        else if (a == "--first") cfg.firstMs = arg(argc, argv, &i);
-        else if (a == "--flip") cfg.wheelFlip = arg(argc, argv, &i) != 0;
-        else if (a == "--list") list = true;
-        else if (a == "--sweep") sweep = true;
-        else if (a.rfind("--", 0) == 0) { printf("unknown option %s\n", a.c_str()); return 2; }
-        else files.push_back(argv[i]);
+    const std::vector<std::wstring> args(argv, argv + argc);
+    std::vector<std::wstring> files;
+    for (size_t i = 1; i < args.size(); ++i) {
+        const std::wstring& a = args[i];
+        if (a == L"--click") cfg.clickGuard = arg(args, &i) != 0;
+        else if (a == L"--bounce") { const double v = arg(args, &i); for (double& b : cfg.bounceMs) b = v; }
+        else if (a == L"--bounce-left") cfg.bounceMs[Left] = arg(args, &i);
+        else if (a == L"--bounce-right") cfg.bounceMs[Right] = arg(args, &i);
+        else if (a == L"--hold-left") cfg.holdMs[Left] = arg(args, &i);
+        else if (a == L"--hold-right") cfg.holdMs[Right] = arg(args, &i);
+        else if (a == L"--blip") cfg.blipMs = arg(args, &i);
+        else if (a == L"--wheel") cfg.wheelGuard = arg(args, &i) != 0;
+        else if (a == L"--resend") cfg.wheelResend = arg(args, &i) != 0;
+        else if (a == L"--reverse") cfg.reverseMs = arg(args, &i);
+        else if (a == L"--confirm") cfg.confirmMs = arg(args, &i);
+        else if (a == L"--turn") cfg.turnMs = arg(args, &i);
+        else if (a == L"--first") cfg.firstMs = arg(args, &i);
+        else if (a == L"--flip") cfg.wheelFlip = arg(args, &i) != 0;
+        else if (a == L"--list") list = true;
+        else if (a == L"--sweep") sweep = true;
+        else if (a.rfind(L"--", 0) == 0) { printf("unknown option %ls\n", a.c_str()); return 2; }
+        else files.push_back(a);
     }
     if (files.empty()) {
-        printf("usage: replay <events.csv> [more.csv ...] [--bounce N] [--hold-left N] [--reverse N] [--confirm N] [--list] [--sweep]\n");
+        printf("usage: replay <events.csv> [more.csv ...] [--bounce N] [--blip N] [--resend 0|1] [--reverse N] [--confirm N] [--turn N] [--list] [--sweep]\n");
         return 2;
     }
+    keepSane(&cfg);     // as the program does with every setting it is given
 
     std::vector<Segment> segments;
-    for (const char* path : files) if (!readFile(path, &segments)) return 2;
+    for (const std::wstring& path : files) if (!readFile(path, &segments)) return 2;
 
     size_t presses[kButtons] = {}, ticks = 0, events = 0;
     for (const Segment& s : segments) {
@@ -347,9 +380,10 @@ int main(int argc, char** argv) {
     }
     printf("%zu events from the mouse in %zu recording session(s): presses left %zu, right %zu, middle %zu, side %zu; wheel ticks %zu\n",
            events, segments.size(), presses[Left], presses[Right], presses[Middle], presses[X1] + presses[X2], ticks);
-    printf("rules: C1 %s (left %.0f, right %.0f ms), hold left %.0f right %.0f ms, wheel %s (reverse %.0f, confirm %.0f, first tick %.0f ms, misread ticks %s)\n\n",
-           cfg.clickGuard ? "on" : "off", cfg.bounceMs[Left], cfg.bounceMs[Right], cfg.holdMs[Left], cfg.holdMs[Right],
-           cfg.wheelGuard ? "on" : "off", cfg.reverseMs, cfg.confirmMs, cfg.firstMs, cfg.wheelFlip ? "turned round" : "dropped");
+    printf("rules: C1 %s (left %.0f, right %.0f ms), hold left %.0f right %.0f ms, press bounce %.0f ms, wheel %s (reverse %.0f, confirm %.0f, turn %.0f, %s)\n\n",
+           cfg.clickGuard ? "on" : "off", cfg.bounceMs[Left], cfg.bounceMs[Right], cfg.holdMs[Left], cfg.holdMs[Right], cfg.blipMs,
+           cfg.wheelGuard ? "on" : "off", cfg.reverseMs, cfg.confirmMs, cfg.turnMs,
+           !cfg.wheelResend ? "sends nothing: misread ticks dropped" : cfg.wheelFlip ? "misread ticks turned round, first tick waits" : "misread ticks dropped, first tick waits");
 
     std::vector<Out> delivered;
     std::vector<Dropped> dropped;

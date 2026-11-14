@@ -52,9 +52,10 @@ $cl = 'cl /nologo /std:c++17 /O2 /W4 /WX /EHsc /MT /DUNICODE /D_UNICODE'
 function Invoke-Vc([string]$What, [string[]]$Lines) {
     Write-Host "== $What"
     $script = Join-Path $OutDir '_step.cmd'
-    $body = @('@echo off', "call `"$vcvars`" >nul 2>&1 || exit /b 1", "cd /d `"$OutDir`" || exit /b 1")
+    # UTF-8 without a byte order mark, and cmd told so, so paths in any language work.
+    $body = @('@echo off', 'chcp 65001 >nul', "call `"$vcvars`" >nul 2>&1 || exit /b 1", "cd /d `"$OutDir`" || exit /b 1")
     foreach ($l in $Lines) { $body += "$l || exit /b 1" }
-    Set-Content -LiteralPath $script -Value $body -Encoding ascii
+    [IO.File]::WriteAllText($script, ($body -join "`r`n") + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
     & $script
     if ($LASTEXITCODE -ne 0) { throw "$What failed with exit code $LASTEXITCODE" }
 }

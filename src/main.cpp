@@ -36,7 +36,7 @@ namespace {
 
 constexpr UINT kTrayMsg = WM_APP + 10;
 constexpr UINT kCommandMsg = WM_APP + 11;      // from a second copy started with --off, --on or --quit
-enum Command : int { kCmdOff = 0, kCmdOn = 1, kCmdQuit = 2 };
+enum Command : int { kCmdOff = 0, kCmdOn = 1, kCmdQuit = 2, kCmdShow = 3 };
 constexpr UINT kTimerId = 1;
 constexpr int  kHotkeyId = 1;
 enum MenuId : UINT { kMenuGuard = 1, kMenuTuner = 2, kMenuQuit = 3, kMenuAutostart = 4 };
@@ -58,6 +58,8 @@ struct App {
     int   port = 8479;
     bool  httpUp = false;
     bool  hotkeyOk = false;
+    bool  portGiven = false, dataGiven = false;   // on the command line: Start with Windows passes them on
+    bool  shutDown = false;
     HWND  hwnd = nullptr;
     HANDLE storeThread = nullptr;
     std::atomic<bool> quit{false};
@@ -147,7 +149,7 @@ void applyFlat(const std::map<std::string, std::string>& m, AppConfig* c) {
         if (it == m.end()) return;
         char* end = nullptr;
         const double v = strtod(it->second.c_str(), &end);
-        if (end != it->second.c_str() && v == v) *out = clampTo(v, lo, hi);
+        if (end != it->second.c_str() && v == v) *out = std::round(clampTo(v, lo, hi));   // whole ms: what runs is what is shown
     };
     // Upper limits. A re-press window above 80 ms eats deliberate double
     // clicks: every click after the first, until the hand pauses. A hold
@@ -167,11 +169,17 @@ void applyFlat(const std::map<std::string, std::string>& m, AppConfig* c) {
     side = c->rules.holdMs[X1];
     number("holdSide", 0, 50, &side);
     c->rules.holdMs[X1] = c->rules.holdMs[X2] = side;
+    number("blipMs", 0, 30, &c->rules.blipMs);
     flag("wheelGuard", &c->rules.wheelGuard);
+    flag("wheelResend", &c->rules.wheelResend);
     flag("wheelFlip", &c->rules.wheelFlip);
     number("reverseMs", 0, 600, &c->rules.reverseMs);
     number("confirmMs", 20, 500, &c->rules.confirmMs);
+    number("turnMs", 0, 5000, &c->rules.turnMs);
     number("firstMs", 0, 150, &c->rules.firstMs);
+    double keep = c->keepDays;
+    number("keepDays", 0, 3650, &keep);
+    c->keepDays = static_cast<int>(keep);
     // Which mouse: "1038:170E" (vendor and product id in hex), or "" for every mouse.
     const auto mouse = m.find("mouse");
     if (mouse != m.end()) {
@@ -189,17 +197,18 @@ void applyFlat(const std::map<std::string, std::string>& m, AppConfig* c) {
 std::string configJson(const AppConfig& c) {
     char mouse[16] = "";
     if (c.vid || c.pid) snprintf(mouse, sizeof(mouse), "%04X:%04X", c.vid, c.pid);
-    char buf[800];
+    char buf[1000];
     snprintf(buf, sizeof(buf),
              "{\n  \"enabled\": %s,\n  \"mouse\": \"%s\",\n  \"clickGuard\": %s,\n  \"bounceLeft\": %.0f,\n  \"bounceRight\": %.0f,\n"
              "  \"bounceMiddle\": %.0f,\n  \"bounceSide\": %.0f,\n  \"holdLeft\": %.0f,\n  \"holdRight\": %.0f,\n"
-             "  \"holdMiddle\": %.0f,\n  \"holdSide\": %.0f,\n"
-             "  \"wheelGuard\": %s,\n  \"wheelFlip\": %s,\n  \"reverseMs\": %.0f,\n  \"confirmMs\": %.0f,\n  \"firstMs\": %.0f\n}\n",
+             "  \"holdMiddle\": %.0f,\n  \"holdSide\": %.0f,\n  \"blipMs\": %.0f,\n"
+             "  \"wheelGuard\": %s,\n  \"wheelResend\": %s,\n  \"wheelFlip\": %s,\n  \"reverseMs\": %.0f,\n  \"confirmMs\": %.0f,\n"
+             "  \"turnMs\": %.0f,\n  \"firstMs\": %.0f,\n  \"keepDays\": %d\n}\n",
              c.enabled ? "true" : "false", mouse, c.rules.clickGuard ? "true" : "false", c.rules.bounceMs[Left],
              c.rules.bounceMs[Right], c.rules.bounceMs[Middle], c.rules.bounceMs[X1], c.rules.holdMs[Left],
-             c.rules.holdMs[Right], c.rules.holdMs[Middle], c.rules.holdMs[X1],
-             c.rules.wheelGuard ? "true" : "false", c.rules.wheelFlip ? "true" : "false", c.rules.reverseMs,
-             c.rules.confirmMs, c.rules.firstMs);
+             c.rules.holdMs[Right], c.rules.holdMs[Middle], c.rules.holdMs[X1], c.rules.blipMs,
+             c.rules.wheelGuard ? "true" : "false", c.rules.wheelResend ? "true" : "false", c.rules.wheelFlip ? "true" : "false",
+             c.rules.reverseMs, c.rules.confirmMs, c.rules.turnMs, c.rules.firstMs, c.keepDays);
     return buf;
 }
 
@@ -334,7 +343,10 @@ std::wstring runCommand() {
     wchar_t path[MAX_PATH * 2] = {};
     const DWORD n = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(sizeof(path) / sizeof(path[0])));
     if (n == 0 || n >= sizeof(path) / sizeof(path[0])) return std::wstring();
-    return L"\"" + std::wstring(path, n) + L"\"";
+    std::wstring command = L"\"" + std::wstring(path, n) + L"\"";
+    if (g.portGiven) command += L" --port " + std::to_wstring(g.port);
+    if (g.dataGiven) command += L" --data \"" + g.dataDir + L"\"";
+    return command;
 }
 
 // True when Windows will start this very copy at login.
@@ -415,11 +427,14 @@ void watchdog() {
     if (on != g.trayState) trayShow(on);
 }
 
+void shutdownAll();
+void noteNewDevices();
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case kTrayMsg:
             if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) showMenu();
-            else if (LOWORD(lp) == WM_LBUTTONUP) openTuner();
+            else if (LOWORD(lp) == WM_LBUTTONUP && g.httpUp) openTuner();
             return 0;
         case WM_HOTKEY:
             // Off only. A key that could also switch the guard on would leave
@@ -433,8 +448,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (command == kCmdQuit) DestroyWindow(hwnd);
             else if (command == kCmdOff) setGuard(false);
             else if (command == kCmdOn) setGuard(true);
+            else if (command == kCmdShow && g.httpUp) openTuner();
             return 0;
         }
+        case WM_ENDSESSION:
+            // Signing out or shutting down: Windows ends the process after this
+            // returns, so finish the test and close the recording now.
+            if (wp) shutdownAll();
+            return 0;
         case WM_TIMER:
             if (wp == kTimerId) watchdog();
             return 0;
@@ -459,6 +480,28 @@ std::string stampBuild(std::string html) {
     const size_t at = html.find(kSlot);
     if (at != std::string::npos) html.replace(at, sizeof(kSlot) - 1, kBuild);
     return html;
+}
+
+// Everything that has to happen before the process ends, once.
+void shutdownAll() {
+    if (g.shutDown) return;
+    g.shutDown = true;
+    KillTimer(g.hwnd, kTimerId);
+    UnregisterHotKey(g.hwnd, kHotkeyId);
+    trayRemove();
+    g.http.stop();
+    g.engine.stop();      // sends any release that was being held back, then unhooks
+    g.quit.store(true);
+    if (g.storeThread) {
+        WaitForSingleObject(g.storeThread, 2000);
+        CloseHandle(g.storeThread);
+        g.storeThread = nullptr;
+    }
+    noteNewDevices();
+    Rec r;
+    while (g.engine.popRecord(&r)) g.store.add(r);
+    g.store.close();      // finishes a test that is still running
+    logLine("stopped");
 }
 
 uint64_t querySince(const std::string& query) {
@@ -599,8 +642,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         else if (a == L"--on") command = kCmdOn;
         else if (a == L"--quit") command = kCmdQuit;
         else if (a == L"--count-injected") g.engine.treatInjectedAsReal = true;
-        else if (a == L"--port" && i + 1 < argc) g.port = _wtoi(argv[++i]);
-        else if (a == L"--data" && i + 1 < argc) g.dataDir = argv[++i];
+        else if (a == L"--port" && i + 1 < argc) { g.port = _wtoi(argv[++i]); g.portGiven = true; }
+        else if (a == L"--data" && i + 1 < argc) { g.dataDir = argv[++i]; g.dataGiven = true; }
         else if (a == L"--web" && i + 1 < argc) g.webDir = argv[++i];
     }
     if (argv) LocalFree(argv);
@@ -620,7 +663,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             return PostMessageW(running, kCommandMsg, static_cast<WPARAM>(command), 0) ? 0 : 2;
         }
         if (running) {
-            if (open) openTuner();
+            // Started again while running: show the page of the copy that runs
+            // (it knows its own port), so starting it is never a silent no-op.
+            PostMessageW(running, kCommandMsg, static_cast<WPARAM>(kCmdShow), 0);
             return 0;
         }
         // The name is taken but no copy has a window: one is just leaving (or
@@ -642,7 +687,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // Settings: the guard on for every mouse, then whatever was saved.
     const std::string saved = readFile(g.dataDir + L"\\config.json");
     if (!saved.empty()) applyFlat(parseFlat(saved), &g.cfg);
+    keepSane(&g.cfg.rules);
     const bool firstRun = saved.empty();     // nothing saved yet: show the page, there is no other sign of life but a tray icon
+    if (firstRun) saveConfig(g.cfg);         // and only this once
 
     g.page = stampBuild(loadPageResource());
     g.store.open(g.dataDir);
@@ -657,7 +704,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (!g.engine.rawInput.load()) logLine("raw input could not be registered: mice cannot be told apart, so only \"every mouse\" will filter");
     g.storeThread = CreateThread(nullptr, 0, &storeLoop, nullptr, 0, nullptr);
 
-    g.httpUp = g.http.start(static_cast<uint16_t>(g.port), &handle, nullptr);
+    // Another program, or this program in another user's session, may have
+    // the port: take the next free one.
+    for (int p = g.port; p < g.port + 10 && p <= 65535 && !g.httpUp; ++p) {
+        g.httpUp = g.http.start(static_cast<uint16_t>(p), &handle, nullptr);
+        if (g.httpUp) g.port = p;
+    }
     if (!g.httpUp) logLine("could not listen on the tuner port: the guard runs without its page");
 
     WNDCLASSW wc{};
@@ -667,6 +719,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     RegisterClassW(&wc);
     g.hwnd = CreateWindowExW(0, wc.lpszClassName, L"fly-by-wire", 0, 0, 0, 0, 0, nullptr, nullptr, instance, nullptr);
     g.taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    // A copy running as administrator still takes --off, --on, --quit from a normal window.
+    ChangeWindowMessageFilterEx(g.hwnd, kCommandMsg, MSGFLT_ALLOW, nullptr);
 
     // Keyboard way out for when the mouse itself is the problem. Not F12:
     // Windows keeps that key for debuggers. Another program may already own
@@ -685,21 +739,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         DispatchMessageW(&msg);
     }
 
-    KillTimer(g.hwnd, kTimerId);
-    UnregisterHotKey(g.hwnd, kHotkeyId);
-    trayRemove();
-    g.http.stop();
-    g.engine.stop();      // sends any release that was being held back, then unhooks
-    g.quit.store(true);
-    if (g.storeThread) {
-        WaitForSingleObject(g.storeThread, 2000);
-        CloseHandle(g.storeThread);
-    }
-    noteNewDevices();
-    Rec r;
-    while (g.engine.popRecord(&r)) g.store.add(r);
-    g.store.close();
-    logLine("stopped");
+    shutdownAll();
     if (single) CloseHandle(single);
     return 0;
 }

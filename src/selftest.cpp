@@ -131,6 +131,9 @@ DWORD WINAPI driver(void*) {
     off.wheelGuard = false;
     off.firstMs = 0;
     off.wheelFlip = false;
+    off.blipMs = 0;
+    off.turnMs = 0;               // no remembered direction, unless a scenario says so
+    off.wheelResend = true;       // the wheel scenarios below send, unless they say otherwise
     Config c1 = off;
     c1.clickGuard = true;
     for (double& b : c1.bounceMs) b = 40;
@@ -139,9 +142,22 @@ DWORD WINAPI driver(void*) {
     // the wheel rule with its extras off: a suspect tick is dropped, the first tick is not held
     Config w1 = off;
     w1.wheelGuard = true; w1.reverseMs = 150; w1.confirmMs = 200;
-    // the wheel rule as fitted to the Rival 500
+    // the wheel rule as first fitted to the Rival 500, before the direction was remembered
     Config fit = off;
     fit.wheelGuard = true; fit.reverseMs = 70; fit.confirmMs = 50; fit.firstMs = 40; fit.wheelFlip = true;
+    // nothing is ever sent for the wheel
+    Config quiet = fit;
+    quiet.confirmMs = 70;
+    quiet.wheelResend = false;
+    // the wheel rule as shipped: the direction is remembered. These scenarios
+    // follow each other: each starts with the direction the one before left.
+    Config mem = fit;
+    mem.confirmMs = 200; mem.turnMs = 1000;
+    Config memQuiet = mem;
+    memQuiet.wheelResend = false;
+    // the press bounce bridge with the re-press guard
+    Config bounce = c1;
+    bounce.blipMs = 20;
 
     const Scenario all[] = {
         {"guard off: everything arrives", false, c1,
@@ -173,6 +189,22 @@ DWORD WINAPI driver(void*) {
          {{0, '+'}, {10, '+'}, {30, '-'}}, "+++", 80, 0},
         {"wheel, fitted: a real turn after a pause keeps every notch", true, fit,
          {{0, '+'}, {10, '+'}, {150, '-'}, {160, '-'}}, "++--", 0, 0},
+        {"remembered: a slow misread between slow notches is turned round", true, mem,
+         {{0, '-'}, {150, '-'}, {300, '+'}, {450, '-'}, {600, '-'}}, "-----", 0, 0},
+        {"remembered: a misread first tick after a pause is caught", true, mem,
+         {{0, '+'}, {12, '-'}, {24, '-'}}, "---", 0, 0},
+        {"remembered: two ticks the other way are a turn", true, mem,
+         {{0, '+'}, {150, '+'}, {300, '+'}}, "+++", 0, 0},
+        {"remembered: a lone tick against it is dropped", true, mem,
+         {{0, '-'}, {1200, '+'}}, "+", 1240, 0},
+        {"remembered, without sending: a turn loses its first notch", true, memQuiet,
+         {{0, '-'}, {150, '-'}, {170, '-'}}, "--", 0, 0},
+        {"without sending: a misread tick in mid stroke is dropped, nothing sent", true, quiet,
+         {{0, '+'}, {10, '+'}, {20, '+'}, {24, '-'}, {32, '+'}}, "++++", 0, 0},
+        {"press bounce: a 3 ms contact and a re-press stay one press", true, bounce,
+         {{0, 'D'}, {3, 'U'}, {7, 'D'}, {300, 'U'}}, "DU", 300, 0},
+        {"press bounce: an 80 ms click is not delayed", true, bounce,
+         {{0, 'D'}, {80, 'U'}}, "DU", 0, 0},
         {"guard switched off again: the bounce and the stray tick arrive", false, fit,
          {{0, 'D'}, {50, 'U'}, {55, 'D'}, {60, 'U'}, {150, '+'}, {160, '+'}, {164, '-'}, {172, '+'}}, "DUDU++-+", 0, 0},
     };
