@@ -960,6 +960,10 @@ config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=1000 first=40 flip=1 
 in:     0 wheel +120, 150 wheel +120, 300 wheel -120, 450 wheel +120
 out:    0 wheel +120, 150 wheel +120, 450 wheel +120
 
+case:   the rule before: after a dropped tick the next one starts a stroke afresh, even inside the reversal window
+config: click=0 hold=0 wheel=1 reverse=150 confirm=100 first=40 flip=0
+in:     0 wheel +120, 10 wheel +120, 20 wheel -120, 130 wheel +120
+out:    10 wheel +120, 10 wheel +120, 170 wheel +120
 case:   turn=0 keeps the rule before: a slow tick against the stroke starts a new stroke
 config: click=0 hold=0 wheel=1 reverse=70 confirm=200 turn=0 first=40 flip=1
 in:     0 wheel +120, 150 wheel +120, 300 wheel -120, 450 wheel +120
