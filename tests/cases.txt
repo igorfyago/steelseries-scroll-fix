@@ -1,0 +1,236 @@
+# Filter cases. One case is four lines:
+#   case:   name
+#   config: click=0|1  bounce=ms (all buttons)  bounceL/R/M/X1/X2=ms  hold=ms (0 is off)
+#           wheel=0|1  reverse=ms  confirm=ms
+#   in:     what the mouse sent       "<ms> <L|R|M|X1|X2> <down|up>"  or  "<ms> wheel <+N|-N>"
+#   out:    what applications get     same notation, with the time each event is delivered
+# An event the filter sends itself is listed at the time it is sent. When it is
+# sent because of an incoming event, it comes right after that event.
+
+# ---------- C1: re-press guard ----------
+case:   plain click passes
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 80 L up
+out:    0 L down, 80 L up
+
+case:   deliberate double click passes
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 70 L up, 190 L down, 260 L up
+out:    0 L down, 70 L up, 190 L down, 260 L up
+
+case:   re-press 5 ms after release is dropped with its release
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 65 L down, 70 L up
+out:    0 L down, 60 L up
+
+case:   a train of bounces is dropped whole
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 63 L down, 66 L up, 70 L down, 73 L up
+out:    0 L down, 60 L up
+
+case:   the click after a dropped bounce passes
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 65 L down, 70 L up, 400 L down, 460 L up
+out:    0 L down, 60 L up, 400 L down, 460 L up
+
+case:   gap equal to the threshold passes
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 100 L down, 160 L up
+out:    0 L down, 60 L up, 100 L down, 160 L up
+
+case:   gap one ms under the threshold is dropped
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 99 L down, 160 L up
+out:    0 L down, 60 L up
+
+case:   the gap is measured from the last physical release, dropped ones included
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 65 L down, 90 L up, 120 L down, 180 L up
+out:    0 L down, 60 L up
+
+case:   buttons are judged separately
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 65 R down, 120 R up, 125 M down, 180 M up
+out:    0 L down, 60 L up, 65 R down, 120 R up, 125 M down, 180 M up
+
+case:   each button has its own threshold
+config: click=1 bounce=40 bounceR=10 hold=0 wheel=0
+in:     0 R down, 60 R up, 80 R down, 140 R up, 200 L down, 260 L up, 280 L down, 340 L up
+out:    0 R down, 60 R up, 80 R down, 140 R up, 200 L down, 260 L up
+
+case:   side buttons are guarded too
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 X1 down, 50 X1 up, 55 X1 down, 60 X1 up, 300 X2 down, 350 X2 up, 353 X2 down, 356 X2 up
+out:    0 X1 down, 50 X1 up, 300 X2 down, 350 X2 up
+
+case:   with the click guard off a bounce passes
+config: click=0 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 65 L down, 70 L up
+out:    0 L down, 60 L up, 65 L down, 70 L up
+
+case:   a release with no press before it passes
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L up, 500 L down, 560 L up
+out:    0 L up, 500 L down, 560 L up
+
+case:   two presses with no release between both pass
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 50 L down, 100 L up
+out:    0 L down, 50 L down, 100 L up
+
+case:   known limit of C1 alone: a bounce on press ends the hold early
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 3 L up, 6 L down, 500 L up
+out:    0 L down, 3 L up
+
+case:   wheel ticks do not disturb the click guard
+config: click=1 bounce=40 hold=0 wheel=0
+in:     0 L down, 60 L up, 62 wheel +120, 65 L down, 70 L up
+out:    0 L down, 60 L up, 62 wheel +120
+
+# ---------- C2: hold bridge ----------
+case:   with the bridge on a release arrives hold ms late
+config: click=1 bounce=40 hold=25 wheel=0
+in:     0 L down, 80 L up
+out:    0 L down, 105 L up
+
+case:   a brief opening during a hold is bridged
+config: click=1 bounce=40 hold=25 wheel=0
+in:     0 L down, 100 L up, 104 L down, 500 L up
+out:    0 L down, 525 L up
+
+case:   several brief openings in one hold are all bridged
+config: click=1 bounce=40 hold=25 wheel=0
+in:     0 L down, 100 L up, 104 L down, 200 L up, 210 L down, 500 L up
+out:    0 L down, 525 L up
+
+case:   a bounce after release becomes one click under the bridge
+config: click=1 bounce=40 hold=25 wheel=0
+in:     0 L down, 60 L up, 65 L down, 70 L up
+out:    0 L down, 95 L up
+
+case:   a bounce on press no longer ends the hold
+config: click=1 bounce=40 hold=25 wheel=0
+in:     0 L down, 3 L up, 6 L down, 500 L up
+out:    0 L down, 525 L up
+
+case:   re-press after the bridge window but inside the bounce window is dropped
+config: click=1 bounce=40 hold=25 wheel=0
+in:     0 L down, 60 L up, 90 L down, 150 L up
+out:    0 L down, 85 L up
+
+case:   deliberate double click survives the bridge
+config: click=1 bounce=40 hold=25 wheel=0
+in:     0 L down, 70 L up, 190 L down, 260 L up
+out:    0 L down, 95 L up, 190 L down, 285 L up
+
+case:   two buttons held together are bridged separately
+config: click=1 bounce=40 hold=25 wheel=0
+in:     0 L down, 10 R down, 80 L up, 90 R up
+out:    0 L down, 10 R down, 105 L up, 115 R up
+
+case:   bridge without the click guard
+config: click=0 bounce=40 hold=25 wheel=0
+in:     0 L down, 60 L up, 90 L down, 150 L up
+out:    0 L down, 85 L up, 90 L down, 175 L up
+
+case:   with the bridge on, a release with no press before it passes at once
+config: click=0 bounce=40 hold=25 wheel=0
+in:     0 L up, 500 L down, 560 L up
+out:    0 L up, 500 L down, 585 L up
+
+case:   re-press exactly when the held release is due: the release wins
+config: click=0 bounce=40 hold=25 wheel=0
+in:     0 L down, 60 L up, 85 L down, 150 L up
+out:    0 L down, 85 L up, 85 L down, 175 L up
+
+# ---------- W1: reversal guard ----------
+case:   steady scrolling passes
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 30 wheel +120, 60 wheel +120
+out:    0 wheel +120, 30 wheel +120, 60 wheel +120
+
+case:   a stray reversed tick in mid scroll is dropped
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 30 wheel -120, 60 wheel +120
+out:    0 wheel +120, 60 wheel +120
+
+case:   the same when scrolling down
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel -120, 30 wheel +120, 60 wheel -120
+out:    0 wheel -120, 60 wheel -120
+
+case:   a stray reversed tick as the wheel settles is dropped
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 30 wheel +120, 60 wheel -120
+out:    0 wheel +120, 30 wheel +120
+
+case:   a real quick reversal delivers both ticks
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 50 wheel -120, 90 wheel -120
+out:    0 wheel +120, 90 wheel -120, 90 wheel -120
+
+case:   after a real reversal the new direction scrolls freely
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 50 wheel -120, 90 wheel -120, 120 wheel -120, 150 wheel -120
+out:    0 wheel +120, 90 wheel -120, 90 wheel -120, 120 wheel -120, 150 wheel -120
+
+case:   a reversal after a pause passes at once
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 200 wheel -120
+out:    0 wheel +120, 200 wheel -120
+
+case:   a reversal exactly at the window passes
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 150 wheel -120
+out:    0 wheel +120, 150 wheel -120
+
+case:   a reversal one ms inside the window is held and then dropped
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 149 wheel -120
+out:    0 wheel +120
+
+case:   a second tick that comes too late does not confirm, it stands alone
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 50 wheel -120, 300 wheel -120
+out:    0 wheel +120, 300 wheel -120
+
+case:   the very first tick passes whatever its direction
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel -120
+out:    0 wheel -120
+
+case:   with the wheel guard off a stray tick passes
+config: click=0 hold=0 wheel=0 reverse=150 confirm=200
+in:     0 wheel +120, 30 wheel -120, 60 wheel +120
+out:    0 wheel +120, 30 wheel -120, 60 wheel +120
+
+case:   tick sizes other than 120 are judged by direction and kept as sent
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +240, 20 wheel -30, 40 wheel +120
+out:    0 wheel +240, 40 wheel +120
+
+case:   a confirmed held tick is sent with its own size
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 20 wheel -30, 40 wheel -60
+out:    0 wheel +120, 40 wheel -60, 40 wheel -30
+
+case:   a stray tick right after a real reversal is dropped as well
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 50 wheel -120, 90 wheel -120, 120 wheel +120, 400 wheel -120
+out:    0 wheel +120, 90 wheel -120, 90 wheel -120, 400 wheel -120
+
+case:   two separate stray ticks are each dropped
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 30 wheel -120, 60 wheel +120, 90 wheel -120, 120 wheel +120
+out:    0 wheel +120, 60 wheel +120, 120 wheel +120
+
+case:   known limit of W1: two wrong ticks in a row read as a reversal
+config: click=0 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 30 wheel -120, 60 wheel -120, 90 wheel +120, 120 wheel +120
+out:    0 wheel +120, 60 wheel -120, 60 wheel -120, 120 wheel +120, 120 wheel +120
+
+case:   clicks do not disturb the wheel guard
+config: click=1 bounce=40 hold=0 wheel=1 reverse=150 confirm=200
+in:     0 wheel +120, 10 L down, 30 wheel -120, 50 L up, 60 wheel +120
+out:    0 wheel +120, 10 L down, 50 L up, 60 wheel +120

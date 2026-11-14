@@ -1,0 +1,2 @@
+// The tuner page, built into the exe so the program is one file.
+PAGE RCDATA "..\\web\\index.html"
