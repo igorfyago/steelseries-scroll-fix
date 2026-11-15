@@ -70,7 +70,8 @@ function Expect([string]$What, $Run, [int]$Good, [int]$Wrong, [int]$Caught) {
 }
 
 # A settings file from the start, so the copy under test does not take this
-# for a first run and open its page in the browser.
+# for a first run: it would open its page in the browser and put itself in
+# Start with Windows in place of the copy that runs there.
 New-Item -ItemType Directory -Force -Path $data | Out-Null
 Set-Content -LiteralPath (Join-Path $data 'config.json') -Value '{"enabled": false}'
 $proc = Start-Process -FilePath (Join-Path $build 'fly-by-wire.exe') -PassThru -ArgumentList @('--count-injected', '--port', $port, '--data', "`"$data`"", '--web', "`"$(Join-Path $root 'web')`"")

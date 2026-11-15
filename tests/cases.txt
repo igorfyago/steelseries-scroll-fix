@@ -1038,6 +1038,10 @@ case:   remembered, turning off: a quick misread dropped at its time-out lets th
 config: click=0 hold=0 wheel=1 reverse=150 confirm=100 turn=1000 first=40 flip=0
 in:     0 wheel +120, 10 wheel +120, 20 wheel -120, 160 wheel +120
 out:    10 wheel +120, 10 wheel +120, 160 wheel +120
+case:   remembered, from start: the first tick waits the longer of confirmMs and firstMs
+config: click=0 hold=0 wheel=1 reverse=70 confirm=100 turn=1000 first=150 flip=1
+in:     0 wheel -120, 500 wheel -120
+out:    150 wheel -120, 650 wheel -120
 case:   B with a release delay longer than the bounce window, a short press is held the longer of the two
 config: click=1 bounce=20 hold=0 holdL=25 blip=20 wheel=0
 in:     0 L down, 3 L up

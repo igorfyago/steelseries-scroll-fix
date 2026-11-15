@@ -60,7 +60,7 @@ constexpr double kStopGuardMs = 500;
 constexpr double kStopClickMs = 400;
 // Runs are counted by rules that have changed. Runs written under older rules
 // are still listed, marked as such, but the test cards only use current ones.
-constexpr int kRunsVersion = 3;
+constexpr int kRunsVersion = 4;
 
 struct TestRun {
     int    id = kNoTest;
@@ -370,10 +370,10 @@ public:
             first = false;
             char buf[240];
             snprintf(buf, sizeof(buf),
-                     "{\"s\":%llu,\"t\":%.1f,\"k\":%d,\"b\":%d,\"d\":%d,\"w\":%d,\"src\":%d,\"x\":%d,\"v\":%d,\"st\":%d,\"g\":%.1f,"
+                     "{\"s\":%llu,\"t\":%.1f,\"k\":%d,\"b\":%d,\"d\":%d,\"w\":%d,\"src\":%d,\"x\":%d,\"v\":%d,\"st\":%d,\"sd\":%d,\"g\":%.1f,"
                      "\"dev\":%d,\"j\":%d}",
                      static_cast<unsigned long long>(it.seq), it.r.t, it.r.kind, it.r.button, it.r.down, it.r.delta,
-                     it.r.source, it.r.blocked, it.r.verdict, it.r.settled, it.gap, it.r.device, it.r.judged);
+                     it.r.source, it.r.blocked, it.r.verdict, it.r.settled, it.r.settledDelta, it.gap, it.r.device, it.r.judged);
             j += buf;
         }
         j += "]}";
@@ -526,12 +526,16 @@ private:
         const bool dropped = settled == static_cast<uint8_t>(Settled::WheelDropped);
         const bool turned = settled == static_cast<uint8_t>(Settled::WheelFlipped);
         const bool lost = settled == static_cast<uint8_t>(Settled::WheelTurnLost);
-        if (dropped || lost) ++counters_.reversalsDropped;
+        // A drop that names no tick is the two held ticks of a pair, both
+        // (nothing remembered yet, so neither went out).
+        const bool pair = dropped && settledDelta == 0;
+        if (dropped || lost) counters_.reversalsDropped += pair ? 2 : 1;
         if (turned) ++counters_.ticksTurned;
         if (lost || settled == static_cast<uint8_t>(Settled::WheelConfirmed)) ++counters_.reversalsConfirmed;
-        if ((dropped || turned) && settledDelta != 0 && run_.active && (run_.id == kTestUp || run_.id == kTestDown)) {
+        if ((dropped || turned || lost) && run_.active && (run_.id == kTestUp || run_.id == kTestDown)) {
             const int want = run_.id == kTestUp ? 1 : -1;
-            if ((settledDelta > 0 ? 1 : -1) != want) ++run_.caught;
+            // Of two ticks that disagree, in a one-way test one went against it.
+            if (pair || (settledDelta != 0 && (settledDelta > 0 ? 1 : -1) != want)) ++run_.caught;
         }
     }
 

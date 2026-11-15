@@ -30,7 +30,7 @@ Why the second column exists: a stroke with a wrong tick in it has as many ticks
 
 Why it is off by default: Windows hands every tick to programs that read raw input before any program like this can hold it back (measured: a tick blocked by the hook still reaches raw input). Sending ticks is safe for browsers, Windows itself and most applications, and for games that read ordinary mouse messages (Age of Empires II DE imports no raw input function). For a game that reads raw input it adds ticks. If your games are not of that kind, switch it on.
 
-All of one day's scroll tests on that mouse (16 runs, 4500 ticks, fast and slow), run back through the rules with `replay.exe`:
+All of one day's scroll tests on that mouse (15 runs, 4500 ticks, fast and slow), run back through the rules with `replay.exe`:
 
 | | Wrong ticks reaching programs |
 |---|---|
@@ -38,7 +38,7 @@ All of one day's scroll tests on that mouse (16 runs, 4500 ticks, fast and slow)
 | Guard, default | 20, a notch lost for each misread |
 | Guard, Send corrected ticks | 25, every notch kept |
 
-All that is left comes from one run, stopped early, where the wheel went the other way 5 to 8 ticks at a time. Nothing that goes by single misreads can tell that from a turn of the hand. The other 15 runs: 0 wrong ticks in both modes. Two of them ran live with the guard on: 34 misreads, none reached a program.
+All that is left comes from one run, stopped early, where the wheel went the other way 5 to 8 ticks at a time. Nothing that goes by single misreads can tell that from a turn of the hand. The other 14 runs: 0 wrong ticks in both modes. The last two of them ran live with this rule: 34 misreads, none reached a program.
 
 ## What it does to clicks
 
@@ -54,7 +54,7 @@ All that is left comes from one run, stopped early, where the wheel went the oth
 3. Pick your mouse in the list at the top of the page. Until you do, every mouse is guarded.
 4. On the Rules tab, switch on **Send corrected ticks** if your programs allow it (see above).
 5. Run the three tests on the page if you want numbers: clicks, scroll up, scroll down. Runs are listed with the guard on or off, so you see before and after.
-6. To have it start at login: right-click the tray icon, **Start with Windows**.
+6. From the first run on it starts with Windows: a value under your user's Run key, nothing installed. To stop that, right-click the tray icon and untick **Start with Windows**; do so before you delete the program, or after you move it start it once from its new place and tick it again.
 
 To switch the guard off: the Guard box on the page, the tray menu, or **Ctrl+Alt+Shift+F11** from anywhere (it only switches off). From the Run box or a command line, give the full path: `"C:\path\to\fly-by-wire.exe" --off`. `--on` and `--quit` work the same way. Starting the exe again opens the page of the copy that runs.
 
@@ -94,6 +94,7 @@ Checks:
 | `tests\mutation_check.ps1` | the tests can fail: every deliberately broken copy of the rules, the mouse matching and the click pair definition must be caught |
 | `build\selftest.exe` | the real hook on the real desktop does what the rules say (takes over the mouse for 30 seconds) |
 | `tests\verify_recorder.ps1` | the recorder counts a scripted faulty mouse exactly (takes over the mouse for a minute) |
+| `node tests\page_test.js web\index.html` | the page colours each held wheel tick by what became of it (optional: needs Node.js) |
 
 ## How it is put together
 

@@ -58,9 +58,20 @@
 //                         decides. A lone first tick is delivered as it came,
 //                         firstMs late. 0 switches this off.
 //                         The first tick since the program started has nothing
-//                         to go by: with turnMs on it waits confirmMs, and if
-//                         the first two disagree with no third tick, neither
-//                         goes out. (turnMs 0: both are delivered as they came.)
+//                         to go by: with turnMs on it waits the longer of
+//                         confirmMs and firstMs, and if the first two disagree
+//                         with no third tick, neither goes out. (turnMs 0: both
+//                         are delivered as they came.)
+//
+// Known limits, both rare and measured as such:
+//   - With nothing sent (wheelResend off), the first tick since the program
+//     started is not held, so it becomes the remembered direction unchecked.
+//     If it was misread and the hand's next notch came within reverseMs, that
+//     notch is taken as a misread too, and a later misread can then go out
+//     the wrong way. It takes two misreads in the first few ticks: in a model
+//     of single misreads, under one start in a thousand.
+//   - Ticks that flush() forgets (the guard switched off, a setting changed)
+//     leave no record, so the counts on the page do not show them.
 //
 // Why turning a tick round is sound, measured on the mouse this was built for
 // (1270 ticks, 84 of them the wrong way): strokes with a wrong tick have the
@@ -283,6 +294,7 @@ public:
                     send(&o, heldDelta_);
                 } else {
                     o.settled = Settled::WheelTurnLost;
+                    settledDelta_ = heldDelta_;
                 }
                 accept(dir, t, sys);
                 return o;
@@ -551,9 +563,13 @@ public:
     void takeBackTick() {
         if (held_ == Held::Pair) {
             // The second of a pair is the one being let through: the first
-            // stays held, as what it was before the second came.
+            // stays held, as what it was before the second came. With nothing
+            // remembered yet, nothing says the first was right, and the second
+            // has reached programs: it is forgotten, as flush() would.
+            const bool nothingRemembered = remembers() && !hasDir_;
             held_ = pairTurn_ ? Held::Reversal : Held::First;
             accept(sign(heldDelta2_), heldAt2_, heldSys2_);
+            if (nothingRemembered) held_ = Held::None;
         } else if (held_ != Held::None) {
             held_ = Held::None;
             accept(sign(heldDelta_), heldAt_, heldSys_);

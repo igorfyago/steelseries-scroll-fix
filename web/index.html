@@ -458,13 +458,17 @@
       if (!st || s.settledDone) continue;
       s.settledDone = true;
       var wheel = st >= 3, decider = wheel && s.k === 1 ? s : null;
+      // A timer that dropped or turned a held tick says which way that tick
+      // went (sd). A drop with none is the two ticks of a pair, both.
+      var left = !decider && st === 4 && !s.sd ? 2 : 1;
       for (var j = i - 1; j >= 0 && j >= i - 40; j--) {
         var h = list[j];
         if (!h.x || h.fate || s.t - h.t > 6000) continue;     // the longest hold: Turn wait (up to 5 s) and a pair after it
         if (wheel ? !isHeldTick(h) : (h.v !== 3 || h.b !== s.b)) continue;
+        if (!decider && s.sd && (h.w > 0) !== (s.sd > 0)) continue;
         if (decider && (st === 4 || st === 5)) h.fate = (h.w > 0) === (decider.w > 0) ? 3 : st;
         else h.fate = st;
-        if (!decider) break;      // a timer settles one held event at a time
+        if (!decider && --left === 0) break;      // a timer settles one held event at a time, a pair dropped whole two
       }
     }
   }

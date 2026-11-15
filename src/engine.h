@@ -297,7 +297,7 @@ private:
             r.t = nowMs();
             r.kind = kSettled;
             r.settled = static_cast<uint8_t>(settled);
-            if (settled == Settled::WheelDropped || settled == Settled::WheelFlipped)
+            if (settled == Settled::WheelDropped || settled == Settled::WheelFlipped || settled == Settled::WheelTurnLost)
                 r.settledDelta = static_cast<int16_t>(filter_.settledDelta());
             r.judged = 1;
             if (hasEmit && e.kind == Emit::ButtonUp) r.button = static_cast<uint8_t>(e.button);
@@ -651,7 +651,7 @@ private:
         r.blocked = o.block ? 1 : 0;
         r.verdict = static_cast<uint8_t>(o.verdict);
         r.settled = static_cast<uint8_t>(o.settled);
-        if (o.settled == Settled::WheelDropped || o.settled == Settled::WheelFlipped)
+        if (o.settled == Settled::WheelDropped || o.settled == Settled::WheelFlipped || o.settled == Settled::WheelTurnLost)
             r.settledDelta = static_cast<int16_t>(e->filter_.settledDelta());
         r.vetoed = o.vetoed ? 1 : 0;
         r.gap = static_cast<float>(o.gapMs);

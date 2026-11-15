@@ -334,8 +334,8 @@ void setGuard(bool on) {
 
 // ---- start with Windows -------------------------------------------------------
 //
-// A value under the user's Run key, set and removed from the tray menu. Nothing
-// is installed and nothing else is written.
+// A value under the user's Run key, set on the first run and removed or set
+// again from the tray menu. Nothing is installed and nothing else is written.
 
 const wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t kRunValue[] = L"fly-by-wire";
@@ -690,7 +690,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (!saved.empty()) applyFlat(parseFlat(saved), &g.cfg);
     keepSane(&g.cfg.rules);
     const bool firstRun = saved.empty();     // nothing saved yet: show the page, there is no other sign of life but a tray icon
-    if (firstRun) saveConfig(g.cfg);         // and only this once
+    if (firstRun) {                          // and only this once:
+        saveConfig(g.cfg);
+        setStartWithWindows(true);           // on by default, so the guard is there after every login; the tray menu takes it off
+    }
 
     g.page = stampBuild(loadPageResource());
     g.store.open(g.dataDir);
